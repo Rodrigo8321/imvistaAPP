@@ -6,6 +6,7 @@ import { colors } from '../styles/colors';
 import DashboardScreen from '../screens/main/DashboardScreen';
 import PortfolioScreen from '../screens/main/PortfolioScreen';
 import AnalysisScreen from '../screens/main/AnalysisScreen';
+import WatchlistScreen from '../screens/main/WatchlistScreen'; // ← ADICIONAR
 import SettingsScreen from '../screens/main/SettingsScreen';
 
 const Tab = createBottomTabNavigator();
@@ -15,6 +16,7 @@ const TabIcon = ({ name, focused }) => {
   const icons = {
     Dashboard: { default: '📊', focused: '📈' },
     Portfolio: { default: '💼', focused: '💰' },
+    Watchlist: { default: '⭐', focused: '🌟' }, // ← ADICIONAR
     Analysis: { default: '🔍', focused: '🎯' },
     Settings: { default: '⚙️', focused: '⚙' },
   };
@@ -62,14 +64,20 @@ export const BottomTabNavigator = () => {
         options={{ tabBarLabel: 'Início' }}
       />
       
-      <Tab.Screen 
-        name="Portfolio" 
+      <Tab.Screen
+        name="Portfolio"
         component={PortfolioScreen}
         options={{ tabBarLabel: 'Portfólio' }}
       />
-      
-      <Tab.Screen 
-        name="Analysis" 
+
+      <Tab.Screen
+        name="Watchlist"
+        component={WatchlistScreen}
+        options={{ tabBarLabel: 'Favoritos' }}
+      />
+
+      <Tab.Screen
+        name="Analysis"
         component={AnalysisScreen}
         options={{ tabBarLabel: 'Análise' }}
       />

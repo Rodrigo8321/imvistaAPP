@@ -13,10 +13,6 @@ export const AuthNavigator = () => {
 
   useEffect(() => {
     checkAuth();
-    
-    // Verificar a cada segundo se autenticação mudou
-    const interval = setInterval(checkAuth, 1000);
-    return () => clearInterval(interval);
   }, []);
 
   const checkAuth = async () => {

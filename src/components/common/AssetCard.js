@@ -1,14 +1,24 @@
 import React from 'react';
 import { View, Text, StyleSheet, TouchableOpacity } from 'react-native';
+import { useNavigation } from '@react-navigation/native';
 import { colors } from '../../styles/colors';
 
 const AssetCard = ({ asset, onPress }) => {
+  const navigation = useNavigation();
+
+  const handlePress = () => {
+    if (onPress) {
+      onPress();
+    } else {
+      navigation.navigate('AssetDetail', { asset });
+    }
+  };
   const profit = (asset.currentPrice - asset.avgPrice) * asset.quantity;
   const profitPercent = ((asset.currentPrice - asset.avgPrice) / asset.avgPrice) * 100;
   const isPositive = profit >= 0;
 
   return (
-    <TouchableOpacity style={styles.container} onPress={onPress}>
+    <TouchableOpacity style={styles.container} onPress={handlePress}>
       <View style={styles.header}>
         <View style={styles.iconContainer}>
           <Text style={styles.icon}>
