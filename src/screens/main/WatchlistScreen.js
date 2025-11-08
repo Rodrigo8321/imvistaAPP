@@ -1,4 +1,4 @@
-import React, { useState, useMemo } from 'react';
+import React, { useState, useMemo, useEffect } from 'react';
 import {
   View,
   Text,
@@ -12,16 +12,26 @@ import {
 import { colors } from '../../styles/colors';
 import { formatCurrency } from '../../utils/formatters';
 import { mockPortfolio } from '../../data/mockAssets';
+import { watchlistService } from '../../services/watchlistService';
 import AssetCard from '../../components/common/AssetCard';
 
 const WatchlistScreen = () => {
-  const [watchlist, setWatchlist] = useState([
-    // Lista inicial de favoritos (pode ser vazia ou com alguns ativos)
-    mockPortfolio[0], // PETR4
-    mockPortfolio[2], // ITUB4
-  ]);
+  const [watchlist, setWatchlist] = useState(watchlistService.getWatchlist());
   const [searchQuery, setSearchQuery] = useState('');
   const [filterType, setFilterType] = useState('all');
+
+  // Atualizar watchlist quando o serviço notificar mudanças
+  useEffect(() => {
+    const handleWatchlistUpdate = (updatedWatchlist) => {
+      setWatchlist(updatedWatchlist);
+    };
+
+    watchlistService.addListener(handleWatchlistUpdate);
+
+    return () => {
+      watchlistService.removeListener(handleWatchlistUpdate);
+    };
+  }, []);
 
   // Filtrar watchlist
   const filteredWatchlist = useMemo(() => {
@@ -54,7 +64,7 @@ const WatchlistScreen = () => {
           text: 'Remover',
           style: 'destructive',
           onPress: () => {
-            setWatchlist(prev => prev.filter(asset => asset.id !== assetId));
+            watchlistService.removeFromWatchlist(assetId);
           }
         }
       ]

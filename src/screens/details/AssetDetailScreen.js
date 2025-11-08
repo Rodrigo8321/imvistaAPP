@@ -11,6 +11,7 @@ import {
 } from 'react-native';
 import { colors } from '../../styles/colors';
 import { formatCurrency } from '../../utils/formatters';
+import { watchlistService } from '../../services/watchlistService';
 import PriceChart from '../../components/common/PriceChart';
 import FundamentalsCard from '../../components/common/FundamentalsCard';
 
@@ -65,9 +66,28 @@ const AssetDetailScreen = ({ route, navigation }) => {
 
   // Adicionar à watchlist
   const handleAddToWatchlist = () => {
-    Alert.alert('💫 Em breve', 'Funcionalidade de Watchlist será adicionada em breve', [
-      { text: 'OK' }
-    ]);
+    const isInWatchlist = watchlistService.isInWatchlist(asset.id);
+
+    if (isInWatchlist) {
+      Alert.alert(
+        'Já nos Favoritos',
+        `${asset.ticker} já está na sua lista de favoritos.`,
+        [
+          { text: 'OK' },
+          {
+            text: 'Remover',
+            style: 'destructive',
+            onPress: () => {
+              watchlistService.removeFromWatchlist(asset.id);
+              Alert.alert('✅ Removido', `${asset.ticker} foi removido dos favoritos.`);
+            }
+          }
+        ]
+      );
+    } else {
+      watchlistService.addToWatchlist(asset);
+      Alert.alert('✅ Adicionado', `${asset.ticker} foi adicionado aos favoritos!`);
+    }
   };
 
   return (
