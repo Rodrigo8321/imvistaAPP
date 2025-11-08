@@ -16,21 +16,20 @@ import { watchlistService } from '../../services/watchlistService';
 import AssetCard from '../../components/common/AssetCard';
 
 const WatchlistScreen = () => {
-  const [watchlist, setWatchlist] = useState(watchlistService.getWatchlist());
+  const [watchlist, setWatchlist] = useState([]);
   const [searchQuery, setSearchQuery] = useState('');
   const [filterType, setFilterType] = useState('all');
 
-  // Atualizar watchlist quando o serviço notificar mudanças
+  // Carregar watchlist do AsyncStorage
   useEffect(() => {
-    const handleWatchlistUpdate = (updatedWatchlist) => {
-      setWatchlist(updatedWatchlist);
+    const loadWatchlist = async () => {
+      const tickers = await watchlistService.getWatchlist();
+      const { mockPortfolio } = await import('../../data/mockAssets');
+      const watchlistAssets = watchlistService.getWatchlistAssets(mockPortfolio, tickers);
+      setWatchlist(watchlistAssets);
     };
 
-    watchlistService.addListener(handleWatchlistUpdate);
-
-    return () => {
-      watchlistService.removeListener(handleWatchlistUpdate);
-    };
+    loadWatchlist();
   }, []);
 
   // Filtrar watchlist
@@ -54,7 +53,7 @@ const WatchlistScreen = () => {
     return filtered;
   }, [watchlist, searchQuery, filterType]);
 
-  const removeFromWatchlist = (assetId) => {
+  const removeFromWatchlist = async (ticker) => {
     Alert.alert(
       'Remover dos Favoritos',
       'Tem certeza que deseja remover este ativo dos favoritos?',
@@ -63,8 +62,13 @@ const WatchlistScreen = () => {
         {
           text: 'Remover',
           style: 'destructive',
-          onPress: () => {
-            watchlistService.removeFromWatchlist(assetId);
+          onPress: async () => {
+            await watchlistService.removeFromWatchlist(ticker);
+            // Recarregar watchlist após remoção
+            const tickers = await watchlistService.getWatchlist();
+            const { mockPortfolio } = await import('../../data/mockAssets');
+            const watchlistAssets = watchlistService.getWatchlistAssets(mockPortfolio, tickers);
+            setWatchlist(watchlistAssets);
           }
         }
       ]
@@ -175,7 +179,7 @@ const WatchlistScreen = () => {
                   />
                   <TouchableOpacity
                     style={styles.removeButton}
-                    onPress={() => removeFromWatchlist(asset.id)}
+                    onPress={() => removeFromWatchlist(asset.ticker)}
                   >
                     <Text style={styles.removeButtonText}>Remover</Text>
                   </TouchableOpacity>

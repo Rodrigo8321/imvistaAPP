@@ -1,138 +1,144 @@
-/**
- * Serviço para gerenciamento da watchlist (lista de favoritos)
- * Responsável por armazenar e recuperar ativos favoritados pelo usuário
- */
+import AsyncStorage from '@react-native-async-storage/async-storage';
 
-class WatchlistService {
-  constructor() {
-    this.watchlist = [];
-    this.listeners = [];
-  }
+const WATCHLIST_KEY = '@InvestPro:watchlist';
+
+export const watchlistService = {
+  /**
+   * Carrega toda a watchlist do AsyncStorage
+   * @returns {Promise<string[]>} Array com tickers na watchlist
+   */
+  async getWatchlist() {
+    try {
+      const data = await AsyncStorage.getItem(WATCHLIST_KEY);
+      return data ? JSON.parse(data) : [];
+    } catch (error) {
+      console.error('Erro ao carregar watchlist:', error);
+      return [];
+    }
+  },
 
   /**
    * Adiciona um ativo à watchlist
-   * @param {object} asset - Ativo a ser adicionado
-   * @returns {boolean} - True se adicionado com sucesso, false se já existe
+   * @param {string} ticker - Ticker do ativo (ex: "PETR4")
+   * @returns {Promise<boolean>} true se adicionado com sucesso
    */
-  addToWatchlist(asset) {
-    const exists = this.watchlist.find(item => item.id === asset.id);
-    if (!exists) {
-      this.watchlist.push(asset);
-      this.notifyListeners();
+  async addToWatchlist(ticker) {
+    try {
+      const watchlist = await this.getWatchlist();
+
+      // Verifica se já existe
+      if (watchlist.includes(ticker)) {
+        console.log(`${ticker} já está na watchlist`);
+        return false;
+      }
+
+      // Adiciona e salva
+      watchlist.push(ticker);
+      await AsyncStorage.setItem(WATCHLIST_KEY, JSON.stringify(watchlist));
+
+      console.log(`✅ ${ticker} adicionado à watchlist`);
       return true;
+    } catch (error) {
+      console.error('Erro ao adicionar à watchlist:', error);
+      return false;
     }
-    return false;
-  }
+  },
 
   /**
    * Remove um ativo da watchlist
-   * @param {string} assetId - ID do ativo a ser removido
-   * @returns {boolean} - True se removido com sucesso, false se não encontrado
+   * @param {string} ticker - Ticker do ativo (ex: "PETR4")
+   * @returns {Promise<boolean>} true se removido com sucesso
    */
-  removeFromWatchlist(assetId) {
-    const index = this.watchlist.findIndex(item => item.id === assetId);
-    if (index !== -1) {
-      this.watchlist.splice(index, 1);
-      this.notifyListeners();
+  async removeFromWatchlist(ticker) {
+    try {
+      const watchlist = await this.getWatchlist();
+
+      // Filtra o ativo removendo
+      const updated = watchlist.filter(t => t !== ticker);
+
+      await AsyncStorage.setItem(WATCHLIST_KEY, JSON.stringify(updated));
+
+      console.log(`✅ ${ticker} removido da watchlist`);
       return true;
+    } catch (error) {
+      console.error('Erro ao remover da watchlist:', error);
+      return false;
     }
-    return false;
-  }
+  },
 
   /**
    * Verifica se um ativo está na watchlist
-   * @param {string} assetId - ID do ativo
-   * @returns {boolean} - True se está na watchlist
+   * @param {string} ticker - Ticker do ativo
+   * @returns {Promise<boolean>} true se está na watchlist
    */
-  isInWatchlist(assetId) {
-    return this.watchlist.some(item => item.id === assetId);
-  }
+  async isInWatchlist(ticker) {
+    try {
+      const watchlist = await this.getWatchlist();
+      return watchlist.includes(ticker);
+    } catch (error) {
+      console.error('Erro ao verificar watchlist:', error);
+      return false;
+    }
+  },
 
   /**
-   * Retorna todos os ativos da watchlist
-   * @returns {Array} - Lista de ativos favoritados
+   * Alterna o status de um ativo na watchlist
+   * Se estiver, remove. Se não estiver, adiciona.
+   * @param {string} ticker - Ticker do ativo
+   * @returns {Promise<boolean>} true se foi adicionado, false se foi removido
    */
-  getWatchlist() {
-    return [...this.watchlist];
-  }
+  async toggleWatchlist(ticker) {
+    try {
+      const isInWatchlist = await this.isInWatchlist(ticker);
+
+      if (isInWatchlist) {
+        await this.removeFromWatchlist(ticker);
+        return false; // Removido
+      } else {
+        await this.addToWatchlist(ticker);
+        return true; // Adicionado
+      }
+    } catch (error) {
+      console.error('Erro ao alternar watchlist:', error);
+      return false;
+    }
+  },
 
   /**
    * Limpa toda a watchlist
+   * @returns {Promise<boolean>} true se limpo com sucesso
    */
-  clearWatchlist() {
-    this.watchlist = [];
-    this.notifyListeners();
-  }
+  async clearWatchlist() {
+    try {
+      await AsyncStorage.removeItem(WATCHLIST_KEY);
+      console.log('✅ Watchlist limpa');
+      return true;
+    } catch (error) {
+      console.error('Erro ao limpar watchlist:', error);
+      return false;
+    }
+  },
 
   /**
-   * Adiciona um listener para mudanças na watchlist
-   * @param {function} listener - Função callback
+   * Filtra ativos por tipo
+   * @param {Array} portfolio - Array de ativos
+   * @param {string} type - Tipo a filtrar ("Ação" ou "FII")
+   * @param {Array} watchlist - Array de tickers na watchlist
+   * @returns {Array} Ativos filtrados que estão na watchlist
    */
-  addListener(listener) {
-    this.listeners.push(listener);
-  }
-
-  /**
-   * Remove um listener
-   * @param {function} listener - Função callback a ser removida
-   */
-  removeListener(listener) {
-    this.listeners = this.listeners.filter(l => l !== listener);
-  }
-
-  /**
-   * Notifica todos os listeners sobre mudanças
-   */
-  notifyListeners() {
-    this.listeners.forEach(listener => {
-      try {
-        listener(this.getWatchlist());
-      } catch (error) {
-        console.error('Erro ao notificar listener da watchlist:', error);
-      }
-    });
-  }
-
-  /**
-   * Filtra watchlist por tipo
-   * @param {string} type - Tipo de ativo ('Ação', 'FII', etc.)
-   * @returns {Array} - Lista filtrada
-   */
-  getWatchlistByType(type) {
-    return this.watchlist.filter(asset => asset.type === type);
-  }
-
-  /**
-   * Busca ativos na watchlist por termo
-   * @param {string} query - Termo de busca
-   * @returns {Array} - Lista filtrada
-   */
-  searchWatchlist(query) {
-    const lowerQuery = query.toLowerCase();
-    return this.watchlist.filter(asset =>
-      asset.ticker.toLowerCase().includes(lowerQuery) ||
-      asset.name.toLowerCase().includes(lowerQuery) ||
-      asset.sector.toLowerCase().includes(lowerQuery)
+  filterByType(portfolio, type, watchlist) {
+    return portfolio.filter(
+      asset => asset.type === type && watchlist.includes(asset.ticker)
     );
-  }
+  },
 
   /**
-   * Retorna estatísticas da watchlist
-   * @returns {object} - Estatísticas
+   * Retorna ativos da watchlist com dados completos
+   * @param {Array} portfolio - Array de ativos (mock data)
+   * @param {Array} watchlist - Array de tickers na watchlist
+   * @returns {Array} Ativos completos que estão na watchlist
    */
-  getWatchlistStats() {
-    const totalAssets = this.watchlist.length;
-    const byType = this.watchlist.reduce((acc, asset) => {
-      acc[asset.type] = (acc[asset.type] || 0) + 1;
-      return acc;
-    }, {});
-
-    return {
-      totalAssets,
-      byType,
-    };
-  }
-}
-
-// Instância singleton do serviço
-export const watchlistService = new WatchlistService();
+  getWatchlistAssets(portfolio, watchlist) {
+    return portfolio.filter(asset => watchlist.includes(asset.ticker));
+  },
+};

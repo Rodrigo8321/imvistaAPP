@@ -65,8 +65,8 @@ const AssetDetailScreen = ({ route, navigation }) => {
   };
 
   // Adicionar à watchlist
-  const handleAddToWatchlist = () => {
-    const isInWatchlist = watchlistService.isInWatchlist(asset.id);
+  const handleAddToWatchlist = async () => {
+    const isInWatchlist = await watchlistService.isInWatchlist(asset.ticker);
 
     if (isInWatchlist) {
       Alert.alert(
@@ -77,15 +77,15 @@ const AssetDetailScreen = ({ route, navigation }) => {
           {
             text: 'Remover',
             style: 'destructive',
-            onPress: () => {
-              watchlistService.removeFromWatchlist(asset.id);
+            onPress: async () => {
+              await watchlistService.removeFromWatchlist(asset.ticker);
               Alert.alert('✅ Removido', `${asset.ticker} foi removido dos favoritos.`);
             }
           }
         ]
       );
     } else {
-      watchlistService.addToWatchlist(asset);
+      await watchlistService.addToWatchlist(asset.ticker);
       Alert.alert('✅ Adicionado', `${asset.ticker} foi adicionado aos favoritos!`);
     }
   };
