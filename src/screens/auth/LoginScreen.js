@@ -13,13 +13,14 @@ import {
   ActivityIndicator,
   SafeAreaView,
 } from 'react-native';
-import { authService } from '../../services/authService';
+import { useAuth } from '../main/AuthContext'; // CORREÇÃO: Usar o hook do contexto
 import { colors } from '../../styles/colors';
 
 const LoginScreen = ({ navigation }) => {
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [loading, setLoading] = useState(false);
+  const { login } = useAuth(); // CORREÇÃO: Obter a função login do contexto
 
   const handleLogin = async () => {
     if (!email || !password) {
@@ -35,10 +36,11 @@ const LoginScreen = ({ navigation }) => {
     setLoading(true);
 
     try {
-      const result = await authService.login(email, password);
-      
+      const result = await login(email, password); // CORREÇÃO: Usar a função do contexto
+
       if (result.success) {
         console.log('✅ Navegando para app...');
+        // A navegação agora é automática, não precisamos mais disto.
       } else {
         Alert.alert('Erro', result.error);
       }

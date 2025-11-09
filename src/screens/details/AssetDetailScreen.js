@@ -1,4 +1,4 @@
-import React, { useState, useMemo } from 'react';
+import React, { useState, useMemo, useEffect } from 'react';
 import {
   View,
   Text,
@@ -24,6 +24,17 @@ const AssetDetailScreen = ({ route, navigation }) => {
   const { asset } = route.params;
   const [chartPeriod, setChartPeriod] = useState(30);
   const [loading, setLoading] = useState(false);
+  const [isFavorited, setIsFavorited] = useState(false);
+
+  // Carregar estado do favorito
+  useEffect(() => {
+    checkIfFavorited();
+  }, [asset.ticker]);
+
+  const checkIfFavorited = async () => {
+    const isFav = await watchlistService.isInWatchlist(asset.ticker);
+    setIsFavorited(isFav);
+  };
 
   // Calcular dados do ativo
   const assetData = useMemo(() => {
@@ -66,27 +77,20 @@ const AssetDetailScreen = ({ route, navigation }) => {
 
   // Adicionar à watchlist
   const handleAddToWatchlist = async () => {
-    const isInWatchlist = await watchlistService.isInWatchlist(asset.ticker);
+    setLoading(true);
+    try {
+      const added = await watchlistService.toggleWatchlist(asset.ticker);
+      setIsFavorited(added);
 
-    if (isInWatchlist) {
-      Alert.alert(
-        'Já nos Favoritos',
-        `${asset.ticker} já está na sua lista de favoritos.`,
-        [
-          { text: 'OK' },
-          {
-            text: 'Remover',
-            style: 'destructive',
-            onPress: async () => {
-              await watchlistService.removeFromWatchlist(asset.ticker);
-              Alert.alert('✅ Removido', `${asset.ticker} foi removido dos favoritos.`);
-            }
-          }
-        ]
-      );
-    } else {
-      await watchlistService.addToWatchlist(asset.ticker);
-      Alert.alert('✅ Adicionado', `${asset.ticker} foi adicionado aos favoritos!`);
+      if (added) {
+        Alert.alert('✅ Sucesso', `${asset.ticker} adicionado aos favoritos!`);
+      } else {
+        Alert.alert('✅ Removido', `${asset.ticker} removido dos favoritos`);
+      }
+    } catch (error) {
+      Alert.alert('Erro', 'Não foi possível atualizar favorito');
+    } finally {
+      setLoading(false);
     }
   };
 
@@ -260,13 +264,18 @@ const AssetDetailScreen = ({ route, navigation }) => {
             )}
           </TouchableOpacity>
 
-          <TouchableOpacity 
-            style={[styles.actionButton, styles.watchlistButton]}
+          <TouchableOpacity
+            style={[styles.actionButton,
+              isFavorited ? styles.watchlistButtonActive : styles.watchlistButton]}
             onPress={handleAddToWatchlist}
             disabled={loading}
           >
-            <Text style={styles.actionButtonIcon}>⭐</Text>
-            <Text style={styles.actionButtonText}>Favoritar</Text>
+            <Text style={styles.actionButtonIcon}>
+              {isFavorited ? '⭐' : '☆'}
+            </Text>
+            <Text style={styles.actionButtonText}>
+              {isFavorited ? 'Favorito' : 'Favoritar'}
+            </Text>
           </TouchableOpacity>
         </View>
 
@@ -458,6 +467,9 @@ const styles = StyleSheet.create({
   },
   watchlistButton: {
     backgroundColor: colors.secondary,
+  },
+  watchlistButtonActive: {
+    backgroundColor: colors.warning,
   },
   actionButtonIcon: {
     fontSize: 18,
