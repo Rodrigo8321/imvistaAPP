@@ -1,54 +1,33 @@
-const { fetchExchangeRate, fetchQuote, testFindTicker } = require('./src/services/marketService');
+const { fetchExchangeRate, fetchQuote } = require('./src/services/marketService');
 
-// Test fetchExchangeRate
-async function testExchangeRate() {
+/**
+ * Script para testar as principais APIs de cotação e câmbio.
+ * Para executar, use: node test_fixes.js
+ */
+const testAPIs = async () => {
+  console.log('\n========== TESTANDO APIs ==========');
+
+  // Teste 1: Taxa de Câmbio
   try {
-    console.log('Testing fetchExchangeRate...');
+    console.log('1️⃣ Testando Taxa de Câmbio...');
     const rate = await fetchExchangeRate();
-    console.log('✅ fetchExchangeRate success:', rate);
+    console.log('✅ Taxa USD/BRL:', rate);
   } catch (error) {
-    console.error('❌ fetchExchangeRate failed:', error.message);
+    console.error('❌ Erro na taxa de câmbio:', error.message);
   }
-}
 
-// Test fetchQuote with valid ticker
-async function testValidQuote() {
+  // Teste 2: Cotação da Brapi
   try {
-    console.log('Testing fetchQuote with PETR4...');
+    console.log('\n2️⃣ Testando Brapi (PETR4)...');
     const asset = { ticker: 'PETR4', type: 'Ação' };
     const quote = await fetchQuote(asset);
-    console.log('✅ fetchQuote success for PETR4:', quote.price);
+    console.log('✅ Cotação PETR4:', quote.price);
   } catch (error) {
-    console.error('❌ fetchQuote failed for PETR4:', error.message);
+    console.error('❌ Erro na cotação PETR4:', error.message);
   }
-}
 
-// Test fetchQuote with invalid ticker
-async function testInvalidQuote() {
-  try {
-    console.log('Testing fetchQuote with BBSE3...');
-    const asset = { ticker: 'BBSE3', type: 'Ação' };
-    const quote = await fetchQuote(asset);
-    console.log('✅ fetchQuote success for BBSE3 (mock):', quote.price);
-  } catch (error) {
-    console.error('❌ fetchQuote failed for BBSE3:', error.message);
-  }
-}
+  console.log('\n===================================\n');
+};
 
-async function testFindTickerFunction() {
-  try {
-    console.log('Testing findTicker with BBSE3...');
-    await testFindTicker();
-  } catch (error) {
-    console.error('❌ findTicker failed for BBSE3:', error.message);
-  }
-}
-
-async function runTests() {
-  // await testExchangeRate();
-  // await testValidQuote();
-  // await testInvalidQuote();
-  await testFindTickerFunction();
-}
-
-runTests();
+// Executa os testes
+testAPIs();

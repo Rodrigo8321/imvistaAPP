@@ -6,7 +6,7 @@ module.exports = {
       {
         moduleName: '@env',
         path: '.env',
-        allowUndefined: true,
+        allowUndefined: false,  // ✅ ALTERADO AQUI
       },
     ],
     [

@@ -58,14 +58,19 @@ let brapiClient = null;
 
 const getBrapiClient = () => {
   if (!brapiClient) {
-    // Inicializa o cliente apenas na primeira vez que for usado.
-    // Isso garante que a variável de ambiente já foi carregada.
     console.log('[DEBUG] Initializing Brapi Client...');
     console.log(`[DEBUG] Token loaded: ${
-      BRAPI_API_KEY ? `...${BRAPI_API_KEY.slice(-4)}` : 'Not Found'
+      BRAPI_API_KEY ? `...${BRAPI_API_KEY.slice(-4)}` : '❌ NOT FOUND'
     }`);
+    
+    // ✅ Validação do token
+    if (!BRAPI_API_KEY) {
+      console.error('❌ CRITICAL ERROR: BRAPI_API_KEY is undefined!');
+      throw new Error('❌ BRAPI_API_KEY não encontrado no .env. Verifique o arquivo .env e reinicie o app.');
+    }
+    
     brapiClient = new Brapi({ apiKey: BRAPI_API_KEY });
-
+    console.log('✅ Brapi client initialized successfully');
   }
   return brapiClient;
 };
@@ -77,6 +82,10 @@ const fetchBrapiQuote = async (ticker) => {
 
     // Utiliza a SDK oficial da Brapi através do getter
     const client = getBrapiClient();
+    
+    // ✅ Log do token para debug
+    console.log('[DEBUG] Token being used for request:', BRAPI_API_KEY ? `...${BRAPI_API_KEY.slice(-4)}` : 'UNDEFINED');
+    
     const json = await client.quote.retrieve(ticker);
 
     if (!json.results || json.results.length === 0) {
@@ -329,6 +338,7 @@ export const fetchQuote = async (asset) => {
   }
 };
 
+// ========== LIMPEZA DE CACHE ==========
 export const clearCache = async () => {
   try {
     const keys = await AsyncStorage.getAllKeys();
@@ -372,7 +382,6 @@ export const clearSearchCache = async () => {
   }
 };
 
-
 // ========== FIND TICKER FUNCTION (EXPERIMENTAL) ==========
 export const findTicker = async (ticker) => {
   try {
@@ -383,7 +392,7 @@ export const findTicker = async (ticker) => {
       headers: {
         'Accept': 'application/json',
         'Content-Type': 'application/json',
-        'Authorization': `Bearer ${API_CONFIG.brapi.bearerToken}`,
+        'Authorization': `Bearer ${BRAPI_API_KEY}`,  // ✅ CORRIGIDO
       },
     });
     const json = await response.json();

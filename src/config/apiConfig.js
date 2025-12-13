@@ -1,3 +1,5 @@
+import { BRAPI_API_KEY } from '@env';  // ✅ Adicionar esta linha
+
 /**
  * Carrega as variáveis de ambiente. Em um ambiente React Native, isso geralmente é feito
  * com um pacote como 'react-native-dotenv'. Para a web, pode ser 'dotenv'.
@@ -31,7 +33,7 @@ export const API_CONFIG = {
   // ========== BRAPI (Ativos BR) ==========
   brapi: {
     // Ex: BRAPI_API_KEY=seu_token_aqui
-    apiKey: process.env.BRAPI_API_KEY, // Carrega a chave do .env
+    apiKey: BRAPI_API_KEY,  // ✅ Usar import direto, não process.env
     baseUrl: 'https://brapi.dev/api',
     timeout: 10000, // 10 segundos
     rateLimit: {
@@ -81,7 +83,7 @@ export const API_CONFIG = {
  * Helpers: Verificam se as chaves de API para serviços específicos foram definidas.
  * Isso evita que o app tente usar chaves de exemplo ou vazias.
  */
-export const isBrapiConfigured = () => !!API_CONFIG.brapi.apiKey && API_CONFIG.brapi.apiKey.length > 5;
+export const isBrapiConfigured = () => !!API_CONFIG.brapi.bearerToken && API_CONFIG.brapi.bearerToken.length > 5;
 
 export const isAlphaVantageConfigured = () => !!API_CONFIG.alphaVantage.apiKey;
 
