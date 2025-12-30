@@ -23,10 +23,13 @@ export function getPortfolioStats({ portfolio, prices, exchangeRate = 5.0 }) {
   }
 
   portfolio.forEach(asset => {
-    const currentPrice = prices?.[asset.ticker] ?? 0;
-    const previousClose = prices?.[asset.ticker]?.previousClose ?? currentPrice;
+    const priceData = prices?.[asset.ticker];
+    const currentPriceRaw = priceData?.price ?? asset.currentPrice ?? 0;
+    const previousClose = priceData?.previousClose ?? currentPriceRaw;
 
-    totalCurrent += asset.quantity * currentPrice;
+    const currentPriceBRL = asset.currency === 'USD' ? currentPriceRaw * exchangeRate : currentPriceRaw;
+
+    totalCurrent += asset.quantity * currentPriceBRL;
     totalInvested += asset.totalInvested || 0;
     totalMonthlyDividends += asset.monthlyDividends || 0;
 
@@ -36,7 +39,7 @@ export function getPortfolioStats({ portfolio, prices, exchangeRate = 5.0 }) {
     }
 
     // Calculate daily profit/loss in BRL
-    const dailyChange = currentPrice - previousClose;
+    const dailyChange = currentPriceRaw - previousClose;
     const dailyProfit = asset.quantity * dailyChange;
     dailyProfitBRL += asset.currency === 'USD' ? dailyProfit * exchangeRate : dailyProfit;
 

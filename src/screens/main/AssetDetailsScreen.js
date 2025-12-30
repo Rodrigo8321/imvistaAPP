@@ -10,23 +10,46 @@ import {
   Modal,
   TextInput,
   Alert,
-  RefreshControl
+  RefreshControl,
+  StatusBar,
+  Platform
 } from 'react-native';
 import { LineChart } from 'react-native-chart-kit';
+import LinearGradient from '../../components/common/Gradient';
+import { SafeAreaView } from 'react-native-safe-area-context';
+import { Ionicons } from '@expo/vector-icons';
+
+import { usePortfolio } from '../../contexts/PortfolioContext';
 import BrapiService from '../../services/brapiService';
-import NewsService from '../../services/NewsService';
+import { fetchQuote, clearCache } from '../../services/marketService';
+import NewsService from '../../services/newsService';
+import AlphaVantageService from '../../services/alphaVantageService';
 import AlertService from '../../services/alertService';
+import StockAnalysisCard from '../../components/analysis/StockAnalysisCard';
 import colors from '../../styles/colors';
+import { formatCurrency, formatPercent } from '../../utils/formatters';
 
 const { width } = Dimensions.get('window');
 
 const AssetDetailsScreen = ({ route, navigation }) => {
-  // ✅ CORREÇÃO: Extrai os parâmetros de forma flexível.
-  const asset = route.params.asset || {};
-  const symbol = route.params.symbol || asset.ticker;
-  const holding = route.params.holding || asset;
-  
-  // Estados
+  // Formato unificado: sempre usar symbol como ticker principal, asset como objeto opcional
+  const symbol = route.params?.symbol || route.params?.ticker;
+  const asset = route.params?.asset || {};
+
+  // Usar PortfolioContext para obter posição real do usuário
+  const { portfolio } = usePortfolio();
+
+  // Log unificado para rastrear navegação
+  console.log(`[UNIFIED NAV] AssetDetailsScreen received:`, {
+    symbol: symbol,
+    asset: asset,
+    routeParams: route.params
+  });
+
+  // Procurar posição no portfólio global, senão usar parâmetro passado
+  const holding = portfolio?.find(p => p.ticker === symbol) || (asset.ticker ? asset : { ticker: symbol });
+
+  // States
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [assetData, setAssetData] = useState(null);
@@ -35,35 +58,58 @@ const AssetDetailsScreen = ({ route, navigation }) => {
   const [news, setNews] = useState([]);
   const [competitors, setCompetitors] = useState([]);
   const [alerts, setAlerts] = useState([]);
-  
-  // Controles de UI
-  const [activeTab, setActiveTab] = useState('overview'); // overview, chart, news, competitors
+
+  // UI Controls
+  const [activeTab, setActiveTab] = useState('overview'); // overview, chart, news, analysis
   const [chartPeriod, setChartPeriod] = useState('1M'); // 1M, 3M, 6M, 1Y
   const [showAlertModal, setShowAlertModal] = useState(false);
   const [alertPrice, setAlertPrice] = useState('');
-  const [alertType, setAlertType] = useState('above'); // above, below
+  const [alertType, setAlertType] = useState('above');
 
-  // Função segura para formatar números, evitando 'NaN'
+  // Helpers
   const safeToFixed = (value, decimals = 2) => {
+    if (value === null) return 'Indisponível';
+    if (value === undefined || value === '') return 'N/A';
     const num = Number(value);
-    if (isNaN(num)) return 'N/A';
+    if (isNaN(num)) return 'Erro';
     return num.toFixed(decimals);
   };
 
+  const isDataInvalid = (data) => {
+    if (!data) return true;
+    if (typeof data === 'object') {
+      // Check for fundamentals object
+      const keyFields = ['priceEarnings', 'returnOnEquity', 'dividendYield', 'priceToBook'];
+      for (const field of keyFields) {
+        const value = data[field];
+        if (value === null || value === undefined || value === 'N/A' || value === 'Indisponível' || value === 'Erro') {
+          return true;
+        }
+      }
+      return false;
+    } else {
+      // Check for price
+      return data === 0 || data === null || data === undefined || data === 'N/A' || data === 'Indisponível' || data === 'Erro';
+    }
+  };
+
+
+
   useEffect(() => {
-    loadAllData();
-    loadAlerts();
+    if (symbol) {
+      loadAllData();
+      loadAlerts();
+    }
   }, [symbol]);
 
-  const loadAllData = async () => {
+  const loadAllData = async (forceRefresh = false) => {
     try {
       setLoading(true);
-      
       await Promise.all([
-        loadAssetData(),
+        loadAssetData(forceRefresh),
         loadPriceHistory(chartPeriod),
         loadNews(),
-        loadCompetitors()
+        loadCompetitors() // Se BrapiService tiver suporte
       ]);
     } catch (error) {
       console.error('Erro ao carregar dados:', error);
@@ -72,43 +118,86 @@ const AssetDetailsScreen = ({ route, navigation }) => {
     }
   };
 
-  const loadAssetData = async () => {
-    const [quoteData, fundData] = await Promise.all([
-      BrapiService.getQuote(symbol),
-      BrapiService.getFundamentals(symbol)
-    ]);
-    setAssetData(quoteData);
-    setFundamentals(fundData);
+  const loadAssetData = async (forceRefresh = false) => {
+    try {
+      // Usa marketService para suportar todos os tipos (Ações, Cripto, Stocks)
+      const quoteData = await fetchQuote({ ticker: symbol, type: asset.type || 'Ação' }, forceRefresh);
+      setAssetData(quoteData);
+
+      // Fundamentals e Histórico dependem do tipo
+      if (asset.type === 'Ação' || asset.type === 'FII' || !asset.type) {
+        const fundData = await BrapiService.getFundamentals(symbol);
+        setFundamentals(fundData);
+      } else {
+        // Para Cripto/Stocks, talvez não tenhamos fundamentos detalhados ainda
+        setFundamentals(quoteData.fundamentals || null);
+      }
+    } catch (e) {
+      console.warn('Erro ao carregar dados do ativo:', e);
+      // Fallback visual
+      if (!assetData) {
+        setAssetData({
+          price: asset.currentPrice || 0,
+          symbol: symbol,
+          changePercent: 0,
+        });
+      }
+    }
   };
 
   const loadPriceHistory = async (period) => {
     try {
-      const history = await BrapiService.getPriceHistory(symbol, period);
-      setPriceHistory(history);
+      if (asset.type === 'Ação' || asset.type === 'FII' || !asset.type) {
+        const history = await BrapiService.getPriceHistory(symbol, period);
+        setPriceHistory(history);
+      } else {
+        // TODO: Implementar histórico para Cripto/Stocks via AlphaVantage/CoinGecko
+        // Por enquanto, retorna vazio para não quebrar
+        console.log('Histórico não implementado para este tipo de ativo');
+        setPriceHistory([]);
+      }
     } catch (error) {
-      console.error(`Falha ao carregar histórico de preços para ${symbol}:`, error);
-      setPriceHistory([]); // Define como vazio para evitar que a tela quebre
+      console.warn(`Falha ao carregar histórico:`, error.message);
+      setPriceHistory([]);
     }
   };
 
   const loadNews = async () => {
-    const newsData = await NewsService.getAssetNews(symbol);
-    setNews(newsData);
+    try {
+      // Try Alpha Vantage first for sentiment analysis
+      const alphaVantageNews = await AlphaVantageService.getNewsSentiment(symbol, 10);
+      if (alphaVantageNews && alphaVantageNews.length > 0) {
+        setNews(alphaVantageNews);
+        return;
+      }
+
+      // Fallback to NewsService if Alpha Vantage fails
+      console.log('[AssetDetails] Alpha Vantage news failed, falling back to NewsService');
+      const newsData = await NewsService.getAssetNews(symbol);
+      setNews(newsData || []);
+    } catch (e) {
+      console.error('[AssetDetails] Error loading news:', e);
+      setNews([]);
+    }
   };
 
   const loadCompetitors = async () => {
-    const competitorData = await BrapiService.getCompetitors(symbol);
-    setCompetitors(competitorData);
+    // Implementar se houver endpoint
+    setCompetitors([]);
   };
 
   const loadAlerts = async () => {
-    const userAlerts = await AlertService.getAlerts(symbol);
-    setAlerts(userAlerts);
+    try {
+      const userAlerts = await AlertService.getAlerts(symbol);
+      setAlerts(userAlerts || []);
+    } catch (e) {
+      setAlerts([]);
+    }
   };
 
   const onRefresh = async () => {
     setRefreshing(true);
-    await loadAllData();
+    await loadAllData(true); // Force refresh on pull-to-refresh
     setRefreshing(false);
   };
 
@@ -122,7 +211,7 @@ const AssetDetailsScreen = ({ route, navigation }) => {
       symbol,
       targetPrice: parseFloat(alertPrice),
       type: alertType,
-      currentPrice: assetData.price,
+      currentPrice: assetData?.price || 0,
       createdAt: new Date().toISOString()
     };
 
@@ -130,32 +219,24 @@ const AssetDetailsScreen = ({ route, navigation }) => {
     await loadAlerts();
     setShowAlertModal(false);
     setAlertPrice('');
-    
-    Alert.alert(
-      'Alerta Criado!',
-      `Você será notificado quando ${symbol} ${alertType === 'above' ? 'ultrapassar' : 'cair abaixo de'} R$ ${alertPrice}`
-    );
+    Alert.alert('Sucesso', 'Alerta criado com sucesso!');
   };
 
   const handleDeleteAlert = async (alertId) => {
-    Alert.alert(
-      'Excluir Alerta',
-      'Tem certeza que deseja excluir este alerta?',
-      [
-        { text: 'Cancelar', style: 'cancel' },
-        {
-          text: 'Excluir',
-          style: 'destructive',
-          onPress: async () => {
-            await AlertService.deleteAlert(alertId);
-            await loadAlerts();
-          }
+    Alert.alert('Confirmação', 'Excluir este alerta?', [
+      { text: 'Cancelar', style: 'cancel' },
+      {
+        text: 'Excluir', style: 'destructive', onPress: async () => {
+          await AlertService.deleteAlert(alertId);
+          await loadAlerts();
         }
-      ]
-    );
+      }
+    ]);
   };
 
-  const renderMetricCard = (title, value, subtitle, color = '#4A90E2') => (
+  // --- Renderers ---
+
+  const renderMetricCard = (title, value, subtitle, color = colors.primary) => (
     <View style={[styles.metricCard, { borderLeftColor: color }]}>
       <Text style={styles.metricTitle}>{title}</Text>
       <Text style={styles.metricValue}>{value}</Text>
@@ -164,1009 +245,838 @@ const AssetDetailsScreen = ({ route, navigation }) => {
   );
 
   const getStatusColor = (metric, value) => {
-    // Define cores baseadas em boas práticas de análise fundamentalista
-    if (metric === 'P/L') {
-      if (value < 10) return '#27AE60'; // Barato
-      if (value < 20) return '#F39C12'; // Razoável
-      return '#E74C3C'; // Caro
-    }
-    if (metric === 'ROE' || metric === 'Margem Líquida') {
-      if (value > 15) return '#27AE60';
-      if (value > 5) return '#F39C12';
-      return '#E74C3C';
-    }
-    return '#4A90E2';
+    // Cores baseadas em análise fundamentalista simples
+    if (metric === 'P/L') return value > 0 && value < 15 ? colors.success : value < 25 ? colors.warning : colors.danger;
+    if (metric === 'ROE') return value > 15 ? colors.success : value > 5 ? colors.warning : colors.danger;
+    if (metric === 'DY') return value > 6 ? colors.success : value > 3 ? colors.warning : colors.textMuted;
+    return colors.info;
   };
 
-  if (loading) {
+  if (loading && !refreshing && !assetData) {
     return (
       <View style={styles.loadingContainer}>
-        <ActivityIndicator size="large" color="#4A90E2" />
-        <Text style={styles.loadingText}>Carregando análise completa...</Text>
+        <ActivityIndicator size="large" color={colors.primary} />
+        <Text style={styles.loadingText}>Carregando análise...</Text>
       </View>
     );
   }
 
+  // Adaptação para o StockAnalysisCard que espera valores em porcentagem (ex: 15.0) e não decimal (ex: 0.15)
+  const fundamentalsForCard = fundamentals ? {
+    ...fundamentals,
+    returnOnEquity: fundamentals.returnOnEquity != null ? fundamentals.returnOnEquity * 100 : null,
+    roe: fundamentals.roe != null ? fundamentals.roe * 100 : null,
+    dividendYield: fundamentals.dividendYield != null ? fundamentals.dividendYield * 100 : null,
+    dy: fundamentals.dy != null ? fundamentals.dy * 100 : null,
+    profitMargin: fundamentals.profitMargin != null ? fundamentals.profitMargin * 100 : null,
+    liquidMargin: fundamentals.liquidMargin != null ? fundamentals.liquidMargin * 100 : null,
+    returnOnAssets: fundamentals.returnOnAssets != null ? fundamentals.returnOnAssets * 100 : null,
+    roa: fundamentals.roa != null ? fundamentals.roa * 100 : null,
+    revenueGrowth: fundamentals.revenueGrowth != null ? fundamentals.revenueGrowth * 100 : null,
+  } : null;
+
+  // Log para identificar problemas com ROE na tela de detalhes
+  console.log(`[LOG ROE] AssetDetailsScreen - ${symbol}:`, {
+    fundamentals_raw: fundamentals,
+    fundamentalsForCard_roe: fundamentalsForCard?.returnOnEquity,
+    fundamentalsForCard_roe_decimal: fundamentalsForCard?.roe,
+    display_roe: fundamentalsForCard?.returnOnEquity ? `${fundamentalsForCard.returnOnEquity}%` : 'N/A'
+  });
+
   const renderOverviewTab = () => (
     <>
-      {holding && (
-        <View style={styles.section}>
-          <Text style={styles.sectionTitle}>📊 Sua Posição</Text>
-          <View style={styles.row}>
-            {renderMetricCard(
-              'Quantidade',
-              holding.quantity,
-              'Ações',
-              '#9B59B6'
-            )}
-            {renderMetricCard(
-              'Preço Médio',
-              `R$ ${safeToFixed(holding.averagePrice)}`,
-              'Compra',
-              '#9B59B6'
-            )}
+      {/* Posição do Usuário (Se houver) */}
+      {(holding && holding.quantity > 0) && (
+        <LinearGradient
+          colors={colors.cardGradient}
+          style={styles.holdingFullCard}
+          start={{ x: 0, y: 0 }}
+          end={{ x: 1, y: 1 }}
+        >
+          <Text style={styles.sectionTitle}>🏰 Sua Posição</Text>
+          <View style={styles.holdingRow}>
+            <View style={styles.holdingItem}>
+              <Text style={styles.holdingLabel}>Qtd</Text>
+              <Text style={styles.holdingValue}>{holding.quantity}</Text>
+            </View>
+            <View style={styles.holdingDivider} />
+            <View style={styles.holdingItem}>
+              <Text style={styles.holdingLabel}>Médio</Text>
+              <Text style={styles.holdingValue}>{formatCurrency(holding.averagePrice)}</Text>
+            </View>
+            <View style={styles.holdingDivider} />
+            <View style={styles.holdingItem}>
+              <Text style={styles.holdingLabel}>Atual</Text>
+              <Text style={styles.holdingValue}>{formatCurrency(holding.quantity * (assetData?.price || 0))}</Text>
+            </View>
           </View>
-          <View style={styles.row}>
-            {renderMetricCard(
-              'Valor Investido',
-              `R$ ${safeToFixed(holding.quantity * holding.averagePrice)}`,
-              'Total aplicado',
-              '#3498DB'
-            )}
-            {renderMetricCard(
-              'Valor Atual',
-              `R$ ${safeToFixed(holding.quantity * assetData?.price)}`,
-              'Posição atual',
-              '#3498DB'
-            )}
+
+          <View style={styles.holdingFooter}>
+            <Text style={styles.holdingResultLabel}>Resultado:</Text>
+            <Text style={[
+              styles.holdingResultValue,
+              { color: ((assetData?.price || 0) - holding.averagePrice) >= 0 ? colors.success : colors.danger }
+            ]}>
+              {formatCurrency((assetData?.price - holding.averagePrice) * holding.quantity)}
+              {' '}
+              ({formatPercent(((assetData?.price / holding.averagePrice) - 1) * 100)})
+            </Text>
           </View>
-          {renderMetricCard(
-            'Resultado',
-            `R$ ${safeToFixed((holding.quantity * assetData?.price) - (holding.quantity * holding.averagePrice))}`,
-            `${safeToFixed(((assetData?.price / holding.averagePrice) - 1) * 100)}% de rentabilidade`,
-            ((assetData?.price / holding.averagePrice) - 1) >= 0 ? colors.success : colors.danger
-          )}
-        </View>
+        </LinearGradient>
       )}
 
+      <StockAnalysisCard symbol={symbol} fundamentals={fundamentalsForCard} />
+
+      {/* Alertas */}
       {alerts.length > 0 && (
         <View style={styles.section}>
-          <Text style={styles.sectionTitle}>🔔 Alertas Ativos</Text>
-          {alerts.map((alert, index) => (
-            <View key={index} style={styles.alertCard}>
-              <View style={styles.alertContent}>
-                <Text style={styles.alertText}>
-                  {alert.type === 'above' ? '📈' : '📉'} R$ {alert.targetPrice.toFixed(2)}
+          <Text style={styles.sectionHeader}>🔔 Seus Alertas</Text>
+          {alerts.map((alert, idx) => (
+            <View key={idx} style={styles.alertItem}>
+              <View>
+                <Text style={styles.alertItemText}>
+                  {alert.type === 'above' ? '▲ Acima de' : '▼ Abaixo de'} {formatCurrency(alert.targetPrice)}
                 </Text>
-                <Text style={styles.alertSubtext}>
-                  {alert.type === 'above' ? 'Subir acima de' : 'Cair abaixo de'}
-                </Text>
+                <Text style={styles.alertDate}>{new Date(alert.createdAt).toLocaleDateString()}</Text>
               </View>
-              <TouchableOpacity 
-                style={styles.deleteAlertButton}
-                onPress={() => handleDeleteAlert(alert.id)}
-              >
-                <Text style={styles.deleteAlertText}>🗑️</Text>
+              <TouchableOpacity onPress={() => handleDeleteAlert(alert.id)}>
+                <Ionicons name="trash-outline" size={20} color={colors.danger} />
               </TouchableOpacity>
             </View>
           ))}
         </View>
       )}
-
-      <View style={styles.section}>
-        <Text style={styles.sectionTitle}>💰 Valuation (Preço vs Valor)</Text>
-        <Text style={styles.sectionDescription}>
-          Indicadores que mostram se a ação está cara ou barata
-        </Text>
-        
-        <View style={styles.row}>
-          {renderMetricCard(
-            'P/L (Price/Earnings)',
-            safeToFixed(fundamentals?.priceEarnings),
-            'Quanto o mercado paga por R$ 1 de lucro',
-            getStatusColor('P/L', fundamentals?.priceEarnings)
-          )}
-          {renderMetricCard(
-            'P/VP (Price/Book)',
-            safeToFixed(fundamentals?.priceToBook),
-            'Preço em relação ao patrimônio',
-            getStatusColor('P/L', fundamentals?.priceToBook)
-          )}
-        </View>
-        
-        <View style={styles.row}>
-          {renderMetricCard(
-            'EV/EBITDA',
-            safeToFixed(fundamentals?.evToEbitda),
-            'Valor da empresa vs geração de caixa',
-            '#E67E22'
-          )}
-          {renderMetricCard(
-            'PSR (Price/Sales)',
-            safeToFixed(fundamentals?.priceToSales),
-            'Preço em relação à receita',
-            '#E67E22'
-          )}
-        </View>
-      </View>
-
-      <View style={styles.section}>
-        <Text style={styles.sectionTitle}>📈 Rentabilidade e Eficiência</Text>
-        <Text style={styles.sectionDescription}>
-          O quão eficiente a empresa é em gerar lucro
-        </Text>
-        
-        <View style={styles.row}>
-          {renderMetricCard(
-            'ROE (Return on Equity)',
-            `${safeToFixed(fundamentals?.roe)}%`,
-            'Retorno sobre patrimônio líquido',
-            getStatusColor('ROE', fundamentals?.roe)
-          )}
-          {renderMetricCard(
-            'ROA (Return on Assets)',
-            `${safeToFixed(fundamentals?.roa)}%`,
-            'Retorno sobre ativos',
-            getStatusColor('ROE', fundamentals?.roa)
-          )}
-        </View>
-        
-        <View style={styles.row}>
-          {renderMetricCard(
-            'Margem Líquida',
-            `${safeToFixed(fundamentals?.netMargin)}%`,
-            'Lucro líquido / Receita',
-            getStatusColor('Margem Líquida', fundamentals?.netMargin)
-          )}
-          {renderMetricCard(
-            'Margem EBITDA',
-            `${safeToFixed(fundamentals?.ebitdaMargin)}%`,
-            'EBITDA / Receita',
-            '#16A085'
-          )}
-        </View>
-      </View>
-
-      <View style={styles.section}>
-        <Text style={styles.sectionTitle}>💳 Endividamento</Text>
-        <Text style={styles.sectionDescription}>
-          Saúde financeira e capacidade de pagamento
-        </Text>
-        
-        <View style={styles.row}>
-          {renderMetricCard(
-            'Dívida Líquida/EBITDA',
-            safeToFixed(fundamentals?.netDebtToEbitda),
-            'Quantos anos para pagar a dívida',
-            fundamentals?.netDebtToEbitda < 2 ? '#27AE60' : '#E74C3C'
-          )}
-          {renderMetricCard(
-            'Dívida/Patrimônio',
-            `${safeToFixed(fundamentals?.debtToEquity)}%`,
-            'Alavancagem da empresa',
-            '#8E44AD'
-          )}
-        </View>
-      </View>
-
-      <View style={styles.section}>
-        <Text style={styles.sectionTitle}>💵 Dividendos</Text>
-        <Text style={styles.sectionDescription}>
-          Proventos distribuídos aos acionistas
-        </Text>
-        
-        <View style={styles.row}>
-          {renderMetricCard(
-            'Dividend Yield',
-            `${safeToFixed(fundamentals?.dividendYield)}%`,
-            'Rendimento anual em dividendos',
-            '#27AE60'
-          )}
-          {renderMetricCard(
-            'Payout Ratio',
-            `${safeToFixed(fundamentals?.payoutRatio)}%`,
-            '% do lucro distribuído',
-            '#27AE60'
-          )}
-        </View>
-      </View>
-
-      <View style={styles.section}>
-        <Text style={styles.sectionTitle}>💼 Resultados (Últimos 12 Meses)</Text>
-        
-        {renderMetricCard(
-          'Receita Líquida',
-          `R$ ${safeToFixed(fundamentals?.revenue / 1000000000)} bi`,
-          'Faturamento da empresa',
-          '#3498DB'
-        )}
-        
-        {renderMetricCard(
-          'EBITDA',
-          `R$ ${safeToFixed(fundamentals?.ebitda / 1000000000)} bi`,
-          'Lucro operacional (antes de juros e impostos)',
-          '#2ECC71'
-        )}
-        
-        {renderMetricCard(
-          'Lucro Líquido',
-          `R$ ${safeToFixed(fundamentals?.netIncome / 1000000000)} bi`,
-          'Resultado final da empresa',
-          '#27AE60'
-        )}
-      </View>
-
-      <View style={styles.section}>
-        <Text style={styles.sectionTitle}>🏢 Informações de Mercado</Text>
-        
-        <View style={styles.row}>
-          {renderMetricCard(
-            'Market Cap',
-            `R$ ${safeToFixed(assetData?.marketCap / 1000000000)} bi`,
-            'Valor de mercado',
-            '#E74C3C'
-          )}
-          {renderMetricCard(
-            'Volume',
-            `${safeToFixed(assetData?.volume / 1000000)}M`,
-            'Volume médio negociado',
-            '#95A5A6'
-          )}
-        </View>
-        
-        <View style={styles.row}>
-          {renderMetricCard(
-            'Máxima 52 Semanas',
-            `R$ ${safeToFixed(fundamentals?.high52Week)}`,
-            'Maior cotação do ano',
-            '#16A085'
-          )}
-          {renderMetricCard(
-            'Mínima 52 Semanas',
-            `R$ ${safeToFixed(fundamentals?.low52Week)}`,
-            'Menor cotação do ano',
-            '#C0392B'
-          )}
-        </View>
-      </View>
-
-      <View style={[styles.section, styles.analysisSection]}>
-        <Text style={styles.sectionTitle}>🎯 Análise Rápida</Text>
-        <View style={styles.analysisList}>
-          <Text style={styles.analysisItem}>
-            {fundamentals?.priceEarnings < 15 ? '✅' : '⚠️'} 
-            {' '}P/L {fundamentals?.priceEarnings < 15 ? 'atrativo' : 'elevado'} 
-            ({safeToFixed(fundamentals?.priceEarnings)})
-          </Text>
-          <Text style={styles.analysisItem}>
-            {fundamentals?.roe > 10 ? '✅' : '⚠️'} 
-            {' '}ROE {fundamentals?.roe > 10 ? 'bom' : 'baixo'} 
-            ({safeToFixed(fundamentals?.roe)}%)
-          </Text>
-          <Text style={styles.analysisItem}>
-            {fundamentals?.netDebtToEbitda < 3 ? '✅' : '⚠️'} 
-            {' '}Dívida {fundamentals?.netDebtToEbitda < 3 ? 'controlada' : 'elevada'} 
-            ({safeToFixed(fundamentals?.netDebtToEbitda)}x EBITDA)
-          </Text>
-          <Text style={styles.analysisItem}>
-            {fundamentals?.dividendYield > 4 ? '✅' : '⚠️'} 
-            {' '}Dividend Yield {fundamentals?.dividendYield > 4 ? 'atrativo' : 'moderado'} 
-            ({safeToFixed(fundamentals?.dividendYield)}%)
-          </Text>
-        </View>
-        
-        <Text style={styles.disclaimer}>
-          ⚠️ Esta análise é apenas informativa e não constitui recomendação de investimento.
-        </Text>
-      </View>
     </>
-  );
-
-  const renderHeader = () => (
-    <View style={styles.header}>
-      <TouchableOpacity 
-        style={styles.backButton}
-        onPress={() => navigation.goBack()}
-      >
-        <Text style={styles.backButtonText}>← Voltar</Text>
-      </TouchableOpacity>
-      
-      <View style={styles.headerContent}>
-        <Text style={styles.symbol}>{symbol}</Text>
-        <Text style={styles.companyName}>{assetData?.name || 'Carregando...'}</Text>
-        
-        <View style={styles.priceContainer}>
-          <Text style={styles.currentPrice}>
-            R$ {assetData?.price?.toFixed(2)}
-          </Text>
-          <Text style={[
-            styles.priceChange,
-            assetData?.changePercent >= 0 ? styles.positive : styles.negative
-          ]}>
-            {assetData?.changePercent >= 0 ? '+' : ''}
-            {assetData?.changePercent?.toFixed(2)}% hoje
-          </Text>
-        </View>
-
-        <TouchableOpacity 
-          style={styles.alertButton}
-          onPress={() => setShowAlertModal(true)}
-        >
-          <Text style={styles.alertButtonText}>🔔 Criar Alerta de Preço</Text>
-        </TouchableOpacity>
-      </View>
-    </View>
-  );
-
-  const renderTabs = () => (
-    <View style={styles.tabContainer}>
-      <TouchableOpacity 
-        style={[styles.tab, activeTab === 'overview' && styles.activeTab]}
-        onPress={() => setActiveTab('overview')}
-      >
-        <Text style={[styles.tabText, activeTab === 'overview' && styles.activeTabText]}>
-          📊 Visão Geral
-        </Text>
-      </TouchableOpacity>
-
-      <TouchableOpacity 
-        style={[styles.tab, activeTab === 'chart' && styles.activeTab]}
-        onPress={() => setActiveTab('chart')}
-      >
-        <Text style={[styles.tabText, activeTab === 'chart' && styles.activeTabText]}>
-          📈 Gráfico
-        </Text>
-      </TouchableOpacity>
-
-      <TouchableOpacity 
-        style={[styles.tab, activeTab === 'news' && styles.activeTab]}
-        onPress={() => setActiveTab('news')}
-      >
-        <Text style={[styles.tabText, activeTab === 'news' && styles.activeTabText]}>
-          📰 Notícias
-        </Text>
-      </TouchableOpacity>
-
-      <TouchableOpacity 
-        style={[styles.tab, activeTab === 'competitors' && styles.activeTab]}
-        onPress={() => setActiveTab('competitors')}
-      >
-        <Text style={[styles.tabText, activeTab === 'competitors' && styles.activeTabText]}>
-          🎯 Comparar
-        </Text>
-      </TouchableOpacity>
-    </View>
   );
 
   const renderChartTab = () => (
     <View style={styles.section}>
-      <Text style={styles.sectionTitle}>📈 Histórico de Preços</Text>
-      
-      {/* Seletor de Período */}
-      <View style={styles.periodSelector}>
-        {['1M', '3M', '6M', '1Y', '5Y'].map(period => (
+      <View style={styles.periodParams}>
+        {['1M', '3M', '6M', '1Y', '5Y'].map(p => (
           <TouchableOpacity
-            key={period}
-            style={[
-              styles.periodButton,
-              chartPeriod === period && styles.periodButtonActive
-            ]}
-            onPress={() => {
-              setChartPeriod(period);
-              loadPriceHistory(period);
-            }}
+            key={p}
+            style={[styles.periodBtn, chartPeriod === p && styles.periodBtnActive]}
+            onPress={() => { setChartPeriod(p); loadPriceHistory(p); }}
           >
-            <Text style={[
-              styles.periodButtonText,
-              chartPeriod === period && styles.periodButtonTextActive
-            ]}>
-              {period}
-            </Text>
+            <Text style={[styles.periodBtnText, chartPeriod === p && styles.periodBtnTextActive]}>{p}</Text>
           </TouchableOpacity>
         ))}
       </View>
 
-      {/* Gráfico */}
       {priceHistory.length > 0 ? (
-        <LineChart
-          data={{
-            labels: priceHistory.map((_, i) => 
-              i % Math.floor(priceHistory.length / 5) === 0 ? 
-              new Date(priceHistory[i].date).toLocaleDateString('pt-BR', { day: '2-digit', month: 'short' }) : ''
-            ),
-            datasets: [{
-              data: priceHistory.map(item => item.price),
-              color: (opacity = 1) => `rgba(74, 144, 226, ${opacity})`,
-              strokeWidth: 2
-            }]
-          }}
-          width={width - 40}
-          height={220}
-          chartConfig={{
-            backgroundColor: '#FFFFFF',
-            backgroundGradientFrom: '#FFFFFF',
-            backgroundGradientTo: '#FFFFFF',
-            decimalPlaces: 2,
-            color: (opacity = 1) => `rgba(74, 144, 226, ${opacity})`,
-            labelColor: (opacity = 1) => `rgba(0, 0, 0, ${opacity})`,
-            style: { borderRadius: 16 },
-            propsForDots: {
-              r: '3',
-              strokeWidth: '2',
-              stroke: '#4A90E2'
-            }
-          }}
-          bezier
-          style={styles.chart}
-        />
+        <View style={styles.chartWrapper}>
+          <LineChart
+            data={{
+              labels: priceHistory.filter((_, i) => i % Math.ceil(priceHistory.length / 4) === 0).map(i => new Date(i.date).getDate() + '/' + (new Date(i.date).getMonth() + 1)),
+              datasets: [{ data: priceHistory.map(i => i.price) }]
+            }}
+            width={width - 40}
+            height={220}
+            yAxisLabel="R$ "
+            chartConfig={{
+              backgroundColor: colors.surface,
+              backgroundGradientFrom: colors.surface,
+              backgroundGradientTo: colors.surface,
+              decimalPlaces: 2,
+              color: (opacity = 1) => `rgba(0, 220, 130, ${opacity})`,
+              labelColor: (opacity = 1) => `rgba(255, 255, 255, ${opacity})`,
+              style: { borderRadius: 16 },
+              propsForDots: { r: '4', strokeWidth: '2', stroke: colors.primary }
+            }}
+            bezier
+            style={styles.chartStyle}
+          />
+        </View>
       ) : (
-        <Text style={styles.noDataText}>Carregando histórico...</Text>
+        <Text style={styles.emptyText}>Gráfico indisponível para este período.</Text>
       )}
-
-      {/* Estatísticas do Período */}
-      <View style={styles.chartStats}>
-        <View style={styles.statItem}>
-          <Text style={styles.statLabel}>Máxima</Text>
-          <Text style={styles.statValue}>
-            R$ {Math.max(...priceHistory.map(h => h.price)).toFixed(2)}
-          </Text>
-        </View>
-        <View style={styles.statItem}>
-          <Text style={styles.statLabel}>Mínima</Text>
-          <Text style={styles.statValue}>
-            R$ {Math.min(...priceHistory.map(h => h.price)).toFixed(2)}
-          </Text>
-        </View>
-        <View style={styles.statItem}>
-          <Text style={styles.statLabel}>Variação</Text>
-          <Text style={[
-            styles.statValue,
-            priceHistory.length > 0 && 
-            ((priceHistory[priceHistory.length - 1].price / priceHistory[0].price - 1) >= 0 
-              ? styles.positive : styles.negative)
-          ]}>
-            {priceHistory.length > 0 ? 
-              ((priceHistory[priceHistory.length - 1].price / priceHistory[0].price - 1) * 100).toFixed(2) 
-              : '0.00'}%
-          </Text>
-        </View>
-      </View>
     </View>
   );
 
   const renderNewsTab = () => (
     <View style={styles.section}>
-      <Text style={styles.sectionTitle}>📰 Notícias Recentes</Text>
-      <Text style={styles.sectionDescription}>
-        Últimas notícias relacionadas a {symbol}
-      </Text>
-
-      {news.length > 0 ? (
+      <Text style={styles.sectionHeader}>📰 Últimas Notícias</Text>
+      {news.length === 0 ? (
+        <Text style={styles.emptyText}>Nenhuma notícia encontrada.</Text>
+      ) : (
         news.map((item, index) => (
-          <TouchableOpacity 
-            key={index}
-            style={styles.newsCard}
-            onPress={() => {
-              // Abrir notícia no navegador ou WebView
-              console.log('Open news:', item.url);
-            }}
-          >
-            <View style={styles.newsHeader}>
-              <Text style={styles.newsSource}>{item.source}</Text>
-              <Text style={styles.newsDate}>
-                {new Date(item.publishedAt).toLocaleDateString('pt-BR')}
-              </Text>
-            </View>
+          <TouchableOpacity key={index} style={styles.newsItem}>
+            <Text style={styles.newsSource}>{item.source}</Text>
             <Text style={styles.newsTitle}>{item.title}</Text>
-            <Text style={styles.newsDescription} numberOfLines={2}>
-              {item.description}
-            </Text>
-            <Text style={styles.readMore}>Ler mais →</Text>
+            <Text style={styles.newsDate}>{new Date(item.publishedAt).toLocaleDateString()}</Text>
           </TouchableOpacity>
         ))
-      ) : (
-        <Text style={styles.noDataText}>Nenhuma notícia recente encontrada</Text>
       )}
     </View>
   );
 
-  const renderAlertModal = () => (
-    <Modal
-      visible={showAlertModal}
-      transparent
-      animationType="slide"
-      onRequestClose={() => setShowAlertModal(false)}
-    >
-      <View style={styles.modalOverlay}>
-        <View style={styles.modalContent}>
-          <Text style={styles.modalTitle}>Criar Alerta de Preço</Text>
-          <Text style={styles.modalSubtitle}>
-            Preço atual: R$ {assetData?.price?.toFixed(2)}
-          </Text>
+  const renderFundamentalsTab = () => {
+    // Calcular Preço Teto (Método Bazin simplificado: Dividend Yield de 6%)
+    const dividendYield = fundamentals?.dividendYield || 0;
+    const lastDividend = fundamentals?.lastDividend || 0;
+    const precoTeto = dividendYield > 0 ? (lastDividend / 0.06) : null;
 
-          <View style={styles.alertTypeSelector}>
-            <TouchableOpacity
-              style={[
-                styles.alertTypeButton,
-                alertType === 'above' && styles.alertTypeButtonActive
-              ]}
-              onPress={() => setAlertType('above')}
-            >
-              <Text style={[
-                styles.alertTypeText,
-                alertType === 'above' && styles.alertTypeTextActive
-              ]}>
-                📈 Acima de
-              </Text>
-            </TouchableOpacity>
+    // Margem de Segurança
+    const currentPrice = assetData?.price || 0;
+    const margemSeguranca = precoTeto ? ((precoTeto - currentPrice) / precoTeto) * 100 : null;
 
-            <TouchableOpacity
-              style={[
-                styles.alertTypeButton,
-                alertType === 'below' && styles.alertTypeButtonActive
-              ]}
-              onPress={() => setAlertType('below')}
-            >
-              <Text style={[
-                styles.alertTypeText,
-                alertType === 'below' && styles.alertTypeTextActive
-              ]}>
-                📉 Abaixo de
-              </Text>
-            </TouchableOpacity>
+    return (
+      <View style={styles.section}>
+        <Text style={styles.sectionHeader}>📊 Indicadores Fundamentalistas</Text>
+
+        {/* Grid de Métricas */}
+        <View style={styles.gridContainer}>
+          {/* Preço Teto */}
+          {renderMetricCard(
+            'Preço Teto',
+            precoTeto ? formatCurrency(precoTeto) : 'N/A',
+            'Método Bazin (DY 6%)',
+            colors.info
+          )}
+
+          {/* Margem de Segurança */}
+          {renderMetricCard(
+            'Margem de Segurança',
+            margemSeguranca !== null ? `${safeToFixed(margemSeguranca, 1)}%` : 'N/A',
+            margemSeguranca > 20 ? 'Excelente' : margemSeguranca > 10 ? 'Boa' : 'Baixa',
+            margemSeguranca > 20 ? colors.success : margemSeguranca > 10 ? colors.warning : colors.danger
+          )}
+
+          {/* P/L */}
+          {renderMetricCard(
+            'P/L',
+            fundamentals?.priceToEarnings ? safeToFixed(fundamentals.priceToEarnings, 2) : 'N/A',
+            'Preço/Lucro',
+            getStatusColor('P/L', fundamentals?.priceToEarnings || 0)
+          )}
+
+          {/* P/VP */}
+          {renderMetricCard(
+            'P/VP',
+            fundamentals?.priceToBook ? safeToFixed(fundamentals.priceToBook, 2) : 'N/A',
+            'Preço/Valor Patrimonial',
+            fundamentals?.priceToBook < 1.5 ? colors.success : fundamentals?.priceToBook < 3 ? colors.warning : colors.danger
+          )}
+
+          {/* ROE */}
+          {renderMetricCard(
+            'ROE',
+            fundamentals?.returnOnEquity ? `${safeToFixed(fundamentals.returnOnEquity * 100, 1)}%` : 'N/A',
+            'Retorno sobre Patrimônio',
+            getStatusColor('ROE', fundamentals?.returnOnEquity || 0)
+          )}
+
+          {/* Dividend Yield */}
+          {renderMetricCard(
+            'Dividend Yield',
+            dividendYield ? `${safeToFixed(dividendYield * 100, 2)}%` : 'N/A',
+            'Rendimento de Dividendos',
+            getStatusColor('DY', dividendYield)
+          )}
+
+          {/* Margem Líquida */}
+          {renderMetricCard(
+            'Margem Líquida',
+            fundamentals?.profitMargin ? `${safeToFixed(fundamentals.profitMargin * 100, 1)}%` : 'N/A',
+            'Lucratividade',
+            fundamentals?.profitMargin > 10 ? colors.success : fundamentals?.profitMargin > 5 ? colors.warning : colors.danger
+          )}
+
+          {/* EV/EBITDA */}
+          {renderMetricCard(
+            'EV/EBITDA',
+            fundamentals?.evToEbitda ? safeToFixed(fundamentals.evToEbitda, 2) : 'N/A',
+            'Valor da Empresa',
+            fundamentals?.evToEbitda < 10 ? colors.success : fundamentals?.evToEbitda < 15 ? colors.warning : colors.danger
+          )}
+
+          {/* Dívida Líquida/EBITDA */}
+          {renderMetricCard(
+            'Dív. Líq./EBITDA',
+            fundamentals?.debtToEbitda ? safeToFixed(fundamentals.debtToEbitda, 2) : 'N/A',
+            'Endividamento',
+            fundamentals?.debtToEbitda < 2 ? colors.success : fundamentals?.debtToEbitda < 3.5 ? colors.warning : colors.danger
+          )}
+
+          {/* ROA */}
+          {renderMetricCard(
+            'ROA',
+            fundamentals?.returnOnAssets ? `${safeToFixed(fundamentals.returnOnAssets * 100, 1)}%` : 'N/A',
+            'Retorno sobre Ativos',
+            fundamentals?.returnOnAssets > 5 ? colors.success : fundamentals?.returnOnAssets > 2 ? colors.warning : colors.danger
+          )}
+
+          {/* PSR */}
+          {renderMetricCard(
+            'PSR',
+            fundamentals?.priceToSales ? safeToFixed(fundamentals.priceToSales, 2) : 'N/A',
+            'Preço/Receita',
+            fundamentals?.priceToSales < 2 ? colors.success : fundamentals?.priceToSales < 4 ? colors.warning : colors.danger
+          )}
+
+          {/* Crescimento de Receita */}
+          {renderMetricCard(
+            'Cresc. Receita',
+            fundamentals?.revenueGrowth ? `${safeToFixed(fundamentals.revenueGrowth * 100, 1)}%` : 'N/A',
+            'Crescimento Anual',
+            fundamentals?.revenueGrowth > 10 ? colors.success : fundamentals?.revenueGrowth > 0 ? colors.warning : colors.danger
+          )}
+        </View>
+
+        {/* Legenda */}
+        <View style={styles.legendContainer}>
+          <Text style={styles.legendTitle}>💡 Legenda de Cores:</Text>
+          <View style={styles.legendRow}>
+            <View style={[styles.legendDot, { backgroundColor: colors.success }]} />
+            <Text style={styles.legendText}>Verde: Excelente</Text>
           </View>
-
-          <TextInput
-            style={styles.priceInput}
-            placeholder="Digite o preço alvo"
-            keyboardType="decimal-pad"
-            value={alertPrice}
-            onChangeText={setAlertPrice}
-          />
-
-          <View style={styles.modalButtons}>
-            <TouchableOpacity
-              style={[styles.modalButton, styles.cancelButton]}
-              onPress={() => setShowAlertModal(false)}
-            >
-              <Text style={styles.cancelButtonText}>Cancelar</Text>
-            </TouchableOpacity>
-
-            <TouchableOpacity
-              style={[styles.modalButton, styles.confirmButton]}
-              onPress={handleCreateAlert}
-            >
-              <Text style={styles.confirmButtonText}>Criar Alerta</Text>
-            </TouchableOpacity>
+          <View style={styles.legendRow}>
+            <View style={[styles.legendDot, { backgroundColor: colors.warning }]} />
+            <Text style={styles.legendText}>Amarelo: Atenção</Text>
+          </View>
+          <View style={styles.legendRow}>
+            <View style={[styles.legendDot, { backgroundColor: colors.danger }]} />
+            <Text style={styles.legendText}>Vermelho: Cuidado</Text>
           </View>
         </View>
       </View>
-    </Modal>
-  );
+    );
+  };
 
   return (
-    <ScrollView 
-      style={styles.container}
-      refreshControl={
-        <RefreshControl refreshing={refreshing} onRefresh={onRefresh} />
-      }
-    >
-      {renderHeader()}
-      {renderTabs()}
-      
-      {activeTab === 'overview' && renderOverviewTab()}
-      {activeTab === 'chart' && renderChartTab()}
-      {activeTab === 'news' && renderNewsTab()}
-      {activeTab === 'competitors' && renderCompetitorsTab()}
-      
-      {renderAlertModal()}
-      
-      <View style={{ height: 40 }} />
-    </ScrollView>
+    <SafeAreaView style={styles.container}>
+      <StatusBar barStyle="light-content" backgroundColor={colors.background} />
+
+      {/* Header */}
+      <View style={styles.header}>
+        <TouchableOpacity onPress={() => navigation.goBack()} style={styles.backButton}>
+          <Ionicons name="arrow-back" size={24} color={colors.text} />
+        </TouchableOpacity>
+        <View style={{ alignItems: 'center' }}>
+          <Text style={styles.headerSymbol}>{symbol}</Text>
+          <Text style={styles.headerName}>
+            {assetData?.name || asset.name || symbol}
+          </Text>
+        </View>
+        <TouchableOpacity onPress={() => setShowAlertModal(true)} style={styles.alertIcon}>
+          <Ionicons name="notifications-outline" size={24} color={colors.accent} />
+        </TouchableOpacity>
+      </View>
+
+      {/* Preço de Destaque */}
+      <View style={styles.priceHeader}>
+        <Text style={styles.bigPrice}>{formatCurrency(assetData?.price || 0)}</Text>
+        <View style={[styles.badge, { backgroundColor: (assetData?.changePercent || 0) >= 0 ? 'rgba(0, 220, 130, 0.2)' : 'rgba(239, 68, 68, 0.2)' }]}>
+          <Ionicons name={(assetData?.changePercent || 0) >= 0 ? "arrow-up" : "arrow-down"} size={12} color={(assetData?.changePercent || 0) >= 0 ? colors.success : colors.danger} />
+          <Text style={[styles.badgeText, { color: (assetData?.changePercent || 0) >= 0 ? colors.success : colors.danger }]}>
+            {formatPercent(assetData?.changePercent || 0)}
+          </Text>
+        </View>
+      </View>
+
+      {/* Abas */}
+      <View style={styles.tabsContainer}>
+        {['overview', 'fundamentos', 'chart', 'news'].map(tab => (
+          <TouchableOpacity
+            key={tab}
+            style={[styles.tabItem, activeTab === tab && styles.tabItemActive]}
+            onPress={() => setActiveTab(tab)}
+          >
+            <Text style={[styles.tabText, activeTab === tab && styles.tabTextActive]}>
+              {tab === 'overview' ? 'Visão Geral' : tab === 'fundamentos' ? 'Fundamentos' : tab === 'chart' ? 'Gráfico' : 'Notícias'}
+            </Text>
+          </TouchableOpacity>
+        ))}
+      </View>
+
+      <ScrollView
+        contentContainerStyle={styles.scrollContent}
+        refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor={colors.primary} />}
+      >
+        {activeTab === 'overview' && renderOverviewTab()}
+        {activeTab === 'fundamentos' && renderFundamentalsTab()}
+        {activeTab === 'chart' && renderChartTab()}
+        {activeTab === 'news' && renderNewsTab()}
+      </ScrollView>
+
+      {/* Modal de Alerta */}
+      <Modal visible={showAlertModal} transparent animationType="fade" onRequestClose={() => setShowAlertModal(false)}>
+        <View style={styles.modalOverlay}>
+          <View style={styles.modalContent}>
+            <Text style={styles.modalTitle}>Criar Alerta</Text>
+            <Text style={styles.modalSubtitle}>Defina um preço alvo para {symbol}</Text>
+
+            <View style={styles.typeSelector}>
+              <TouchableOpacity onPress={() => setAlertType('above')} style={[styles.typeBtn, alertType === 'above' && styles.typeBtnActive]}>
+                <Text style={styles.typeBtnText}>Acima de</Text>
+              </TouchableOpacity>
+              <TouchableOpacity onPress={() => setAlertType('below')} style={[styles.typeBtn, alertType === 'below' && styles.typeBtnActive]}>
+                <Text style={styles.typeBtnText}>Abaixo de</Text>
+              </TouchableOpacity>
+            </View>
+
+            <TextInput
+              style={styles.input}
+              placeholder="R$ 0,00"
+              placeholderTextColor={colors.textMuted}
+              keyboardType="numeric"
+              value={alertPrice}
+              onChangeText={setAlertPrice}
+            />
+
+            <View style={styles.modalActions}>
+              <TouchableOpacity onPress={() => setShowAlertModal(false)} style={styles.cancelBtn}>
+                <Text style={styles.cancelText}>Cancelar</Text>
+              </TouchableOpacity>
+              <TouchableOpacity onPress={handleCreateAlert} style={styles.saveBtn}>
+                <Text style={styles.saveText}>Salvar</Text>
+              </TouchableOpacity>
+            </View>
+          </View>
+        </View>
+      </Modal>
+
+    </SafeAreaView>
   );
 };
 
+// Styles
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: '#F5F7FA',
+    backgroundColor: colors.background,
   },
   loadingContainer: {
     flex: 1,
     justifyContent: 'center',
     alignItems: 'center',
-    backgroundColor: '#F5F7FA',
+    backgroundColor: colors.background,
   },
   loadingText: {
-    marginTop: 16,
-    fontSize: 16,
-    color: '#7F8C8D',
+    marginTop: 10,
+    color: colors.textSecondary,
   },
   header: {
-    backgroundColor: '#FFFFFF',
-    padding: 24,
-    paddingTop: 48,
-    borderBottomWidth: 1,
-    borderBottomColor: '#E1E8ED',
-  },
-  backButton: {
-    marginBottom: 16,
-  },
-  backButtonText: {
-    fontSize: 16,
-    color: '#4A90E2',
-    fontWeight: '600',
-  },
-  headerContent: {
-    alignItems: 'center',
-  },
-  symbol: {
-    fontSize: 32,
-    fontWeight: 'bold',
-    color: '#2C3E50',
-  },
-  companyName: {
-    fontSize: 16,
-    color: '#7F8C8D',
-    marginTop: 4,
-  },
-  priceContainer: {
-    marginTop: 16,
-    alignItems: 'center',
-  },
-  currentPrice: {
-    fontSize: 36,
-    fontWeight: 'bold',
-    color: '#2C3E50',
-  },
-  priceChange: {
-    fontSize: 18,
-    marginTop: 4,
-    fontWeight: '600',
-  },
-  positive: {
-    color: '#27AE60',
-  },
-  negative: {
-    color: '#E74C3C',
-  },
-  alertButton: {
-    backgroundColor: '#4A90E2',
-    paddingVertical: 12,
-    paddingHorizontal: 24,
-    borderRadius: 12,
-    marginTop: 16,
-  },
-  alertButtonText: {
-    color: '#FFFFFF',
-    fontSize: 16,
-    fontWeight: '600',
-  },
-  tabContainer: {
-    flexDirection: 'row',
-    backgroundColor: '#FFFFFF',
-    paddingHorizontal: 8,
-    paddingVertical: 8,
-    borderBottomWidth: 1,
-    borderBottomColor: '#E1E8ED',
-  },
-  tab: {
-    flex: 1,
-    paddingVertical: 12,
-    alignItems: 'center',
-    borderRadius: 8,
-  },
-  activeTab: {
-    backgroundColor: '#EBF4FF',
-  },
-  tabText: {
-    fontSize: 12,
-    color: '#7F8C8D',
-    fontWeight: '600',
-  },
-  activeTabText: {
-    color: '#4A90E2',
-  },
-  section: {
-    backgroundColor: '#FFFFFF',
-    marginTop: 16,
-    padding: 20,
-  },
-  sectionTitle: {
-    fontSize: 20,
-    fontWeight: 'bold',
-    color: '#2C3E50',
-    marginBottom: 8,
-  },
-  sectionDescription: {
-    fontSize: 14,
-    color: '#7F8C8D',
-    marginBottom: 16,
-    lineHeight: 20,
-  },
-  row: {
     flexDirection: 'row',
     justifyContent: 'space-between',
+    alignItems: 'center',
+    paddingHorizontal: 20,
+    paddingVertical: 10,
+  },
+  headerSymbol: {
+    color: colors.text,
+    fontSize: 18,
+    fontWeight: 'bold',
+  },
+  headerName: {
+    color: colors.textSecondary,
+    fontSize: 12,
+  },
+  backButton: {
+    padding: 8,
+  },
+  alertIcon: {
+    padding: 8,
+  },
+  priceHeader: {
+    alignItems: 'center',
+    marginVertical: 10,
+  },
+  bigPrice: {
+    fontSize: 36,
+    fontWeight: 'bold',
+    color: colors.text,
+    marginBottom: 4,
+  },
+  badge: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingHorizontal: 8,
+    paddingVertical: 4,
+    borderRadius: 12,
+  },
+  badgeText: {
+    fontSize: 14,
+    fontWeight: 'bold',
+    marginLeft: 4,
+  },
+  tabsContainer: {
+    flexDirection: 'row',
+    paddingHorizontal: 20,
+    borderBottomWidth: 1,
+    borderBottomColor: colors.border,
+    marginBottom: 10,
+  },
+  tabItem: {
+    marginRight: 24,
+    paddingVertical: 12,
+  },
+  tabItemActive: {
+    borderBottomWidth: 2,
+    borderBottomColor: colors.primary,
+  },
+  tabText: {
+    color: colors.textSecondary,
+    fontSize: 14,
+    fontWeight: '500',
+  },
+  tabTextActive: {
+    color: colors.primary,
+    fontWeight: 'bold',
+  },
+  scrollContent: {
+    padding: 20,
+    paddingBottom: 40,
+  },
+  section: {
+    marginBottom: 24,
+  },
+  sectionHeader: {
+    fontSize: 18,
+    fontWeight: 'bold',
+    color: colors.text,
     marginBottom: 12,
   },
-  metricCard: {
-    flex: 1,
-    backgroundColor: '#F8F9FA',
+  holdingFullCard: {
     padding: 16,
+    borderRadius: 16,
+    marginBottom: 24,
+  },
+  sectionTitle: {
+    fontSize: 14,
+    fontWeight: 'bold',
+    color: '#ECFDF5',
+    marginBottom: 12,
+    opacity: 0.9,
+  },
+  holdingRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    marginBottom: 16,
+  },
+  holdingItem: {
+    alignItems: 'center',
+    flex: 1,
+  },
+  holdingLabel: {
+    fontSize: 12,
+    color: '#A7F3D0',
+    marginBottom: 4,
+  },
+  holdingValue: {
+    fontSize: 16,
+    fontWeight: 'bold',
+    color: '#fff',
+  },
+  holdingDivider: {
+    width: 1,
+    backgroundColor: 'rgba(255,255,255,0.2)',
+    height: '100%',
+  },
+  holdingFooter: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    borderTopWidth: 1,
+    borderTopColor: 'rgba(255,255,255,0.2)',
+    paddingTop: 12,
+  },
+  holdingResultLabel: {
+    color: '#ECFDF5',
+    fontWeight: 'bold',
+  },
+  holdingResultValue: {
+    fontWeight: 'bold',
+  },
+  gridContainer: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    justifyContent: 'space-between',
+  },
+  metricCard: {
+    width: (width - 60) / 2, // 20 pad left, 20 pad right, 20 gap
+    backgroundColor: colors.surface,
+    padding: 12,
     borderRadius: 12,
-    marginHorizontal: 4,
+    marginBottom: 12,
     borderLeftWidth: 4,
+    borderWidth: 1,
+    borderColor: colors.border,
   },
   metricTitle: {
     fontSize: 12,
-    color: '#7F8C8D',
-    marginBottom: 8,
-    fontWeight: '600',
+    color: colors.textSecondary,
+    marginBottom: 4,
   },
   metricValue: {
-    fontSize: 20,
+    fontSize: 16,
     fontWeight: 'bold',
-    color: '#2C3E50',
-    marginBottom: 4,
+    color: colors.text,
   },
   metricSubtitle: {
-    fontSize: 11,
-    color: '#95A5A6',
-    lineHeight: 16,
+    fontSize: 10,
+    color: colors.textMuted,
+    marginTop: 2,
   },
-  // Chart styles
-  periodSelector: {
+  periodParams: {
     flexDirection: 'row',
-    justifyContent: 'space-around',
+    justifyContent: 'space-between',
     marginBottom: 16,
-  },
-  periodButton: {
-    paddingVertical: 8,
-    paddingHorizontal: 16,
+    backgroundColor: colors.surface,
+    padding: 4,
     borderRadius: 8,
-    backgroundColor: '#F8F9FA',
   },
-  periodButtonActive: {
-    backgroundColor: '#4A90E2',
+  periodBtn: {
+    flex: 1,
+    alignItems: 'center',
+    paddingVertical: 8,
+    borderRadius: 6,
   },
-  periodButtonText: {
-    fontSize: 14,
-    color: '#7F8C8D',
-    fontWeight: '600',
+  periodBtnActive: {
+    backgroundColor: colors.primary,
   },
-  periodButtonTextActive: {
-    color: '#FFFFFF',
+  periodBtnText: {
+    color: colors.textSecondary,
+    fontSize: 12,
+    fontWeight: 'bold',
   },
-  chart: {
-    marginVertical: 8,
+  periodBtnTextActive: {
+    color: '#000',
+  },
+  chartWrapper: {
+    alignItems: 'center',
+    marginLeft: -20, // compensate for padding/margin shenanigans in chart kit
+  },
+  chartStyle: {
     borderRadius: 16,
   },
-  chartStats: {
-    flexDirection: 'row',
-    justifyContent: 'space-around',
-    marginTop: 16,
-    paddingTop: 16,
-    borderTopWidth: 1,
-    borderTopColor: '#E1E8ED',
-  },
-  statItem: {
-    alignItems: 'center',
-  },
-  statLabel: {
-    fontSize: 12,
-    color: '#7F8C8D',
-    marginBottom: 4,
-  },
-  statValue: {
-    fontSize: 16,
-    fontWeight: 'bold',
-    color: '#2C3E50',
-  },
-  // News styles
-  newsCard: {
-    backgroundColor: '#F8F9FA',
+  newsItem: {
+    backgroundColor: colors.surface,
     padding: 16,
     borderRadius: 12,
     marginBottom: 12,
-  },
-  newsHeader: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    marginBottom: 8,
+    borderWidth: 1,
+    borderColor: colors.border,
   },
   newsSource: {
+    color: colors.primary,
     fontSize: 12,
-    color: '#4A90E2',
-    fontWeight: '600',
-  },
-  newsDate: {
-    fontSize: 12,
-    color: '#95A5A6',
+    fontWeight: 'bold',
+    marginBottom: 4,
   },
   newsTitle: {
-    fontSize: 16,
-    fontWeight: 'bold',
-    color: '#2C3E50',
-    marginBottom: 8,
-  },
-  newsDescription: {
+    color: colors.text,
     fontSize: 14,
-    color: '#7F8C8D',
-    lineHeight: 20,
-  },
-  readMore: {
-    fontSize: 14,
-    color: '#4A90E2',
-    marginTop: 8,
     fontWeight: '600',
-  },
-  // Comparison styles
-  comparisonTable: {
-    marginTop: 16,
-  },
-  tableRow: {
-    flexDirection: 'row',
-    borderBottomWidth: 1,
-    borderBottomColor: '#E1E8ED',
-    paddingVertical: 12,
-  },
-  tableHeader: {
-    fontSize: 14,
-    fontWeight: 'bold',
-    color: '#2C3E50',
-    width: 100,
-    textAlign: 'center',
-  },
-  tableCell: {
-    fontSize: 14,
-    color: '#7F8C8D',
-    width: 100,
-    textAlign: 'center',
-  },
-  tableFirstColumn: {
-    width: 120,
-    textAlign: 'left',
-  },
-  highlightCell: {
-    color: '#4A90E2',
-    fontWeight: 'bold',
-  },
-  comparisonAnalysis: {
-    marginTop: 24,
-    padding: 16,
-    backgroundColor: '#FFF9E6',
-    borderRadius: 12,
-    borderLeftWidth: 4,
-    borderLeftColor: '#F39C12',
-  },
-  analysisTitle: {
-    fontSize: 16,
-    fontWeight: 'bold',
-    color: '#2C3E50',
-    marginBottom: 12,
-  },
-  analysisItem: {
-    fontSize: 14,
-    color: '#2C3E50',
     marginBottom: 8,
     lineHeight: 20,
   },
-  // Alert styles
-  alertCard: {
+  newsDate: {
+    color: colors.textMuted,
+    fontSize: 12,
+  },
+  emptyText: {
+    color: colors.textSecondary,
+    fontStyle: 'italic',
+    textAlign: 'center',
+    marginTop: 20,
+  },
+  alertItem: {
     flexDirection: 'row',
-    alignItems: 'center',
     justifyContent: 'space-between',
-    backgroundColor: '#FFF9E6',
+    alignItems: 'center',
+    backgroundColor: colors.surface,
     padding: 16,
     borderRadius: 12,
-    marginBottom: 8,
+    marginBottom: 12,
+    borderWidth: 1,
+    borderColor: colors.border,
   },
-  alertContent: {
-    flex: 1,
-  },
-  alertText: {
-    fontSize: 18,
+  alertItemText: {
+    color: colors.text,
     fontWeight: 'bold',
-    color: '#2C3E50',
-  },
-  alertSubtext: {
     fontSize: 14,
-    color: '#7F8C8D',
+  },
+  alertDate: {
+    color: colors.textMuted,
+    fontSize: 12,
     marginTop: 4,
   },
-  deleteAlertButton: {
-    padding: 8,
-  },
-  deleteAlertText: {
-    fontSize: 24,
-  },
-  // Modal styles
   modalOverlay: {
     flex: 1,
-    backgroundColor: 'rgba(0, 0, 0, 0.5)',
+    backgroundColor: 'rgba(0,0,0,0.7)',
     justifyContent: 'center',
-    alignItems: 'center',
+    padding: 20,
   },
   modalContent: {
-    backgroundColor: '#FFFFFF',
-    borderRadius: 16,
+    backgroundColor: colors.surfaceHighlight,
+    borderRadius: 20,
     padding: 24,
-    width: width - 48,
   },
   modalTitle: {
+    color: colors.text,
     fontSize: 20,
     fontWeight: 'bold',
-    color: '#2C3E50',
     marginBottom: 8,
+    textAlign: 'center',
   },
   modalSubtitle: {
+    color: colors.textSecondary,
     fontSize: 14,
-    color: '#7F8C8D',
-    marginBottom: 24,
+    marginBottom: 20,
+    textAlign: 'center',
   },
-  alertTypeSelector: {
+  typeSelector: {
     flexDirection: 'row',
-    marginBottom: 24,
+    marginBottom: 20,
   },
-  alertTypeButton: {
+  typeBtn: {
     flex: 1,
-    paddingVertical: 12,
+    padding: 12,
     alignItems: 'center',
-    backgroundColor: '#F8F9FA',
-    borderRadius: 8,
-    marginHorizontal: 4,
-  },
-  alertTypeButtonActive: {
-    backgroundColor: '#4A90E2',
-  },
-  alertTypeText: {
-    fontSize: 14,
-    color: '#7F8C8D',
-    fontWeight: '600',
-  },
-  alertTypeTextActive: {
-    color: '#FFFFFF',
-  },
-  priceInput: {
     borderWidth: 1,
-    borderColor: '#E1E8ED',
-    borderRadius: 8,
-    padding: 16,
-    fontSize: 16,
-    marginBottom: 24,
+    borderColor: colors.border,
   },
-  modalButtons: {
+  typeBtnActive: {
+    backgroundColor: colors.primary,
+    borderColor: colors.primary,
+  },
+  typeBtnText: {
+    color: colors.text,
+    fontWeight: 'bold',
+  },
+  input: {
+    backgroundColor: colors.background,
+    color: colors.text,
+    fontSize: 24,
+    textAlign: 'center',
+    padding: 16,
+    borderRadius: 12,
+    marginBottom: 24,
+    fontWeight: 'bold',
+  },
+  modalActions: {
     flexDirection: 'row',
     justifyContent: 'space-between',
+    gap: 12,
   },
-  modalButton: {
+  cancelBtn: {
     flex: 1,
-    paddingVertical: 12,
+    backgroundColor: colors.surface,
+    padding: 16,
+    borderRadius: 12,
     alignItems: 'center',
-    borderRadius: 8,
-    marginHorizontal: 4,
   },
-  cancelButton: {
-    backgroundColor: '#F8F9FA',
+  saveBtn: {
+    flex: 1,
+    backgroundColor: colors.primary,
+    padding: 16,
+    borderRadius: 12,
+    alignItems: 'center',
   },
-  confirmButton: {
-    backgroundColor: '#4A90E2',
+  cancelText: {
+    color: colors.text,
+    fontWeight: 'bold',
   },
-  cancelButtonText: {
-    fontSize: 16,
-    color: '#7F8C8D',
-    fontWeight: '600',
+  saveText: {
+    color: '#000',
+    fontWeight: 'bold',
   },
-  confirmButtonText: {
-    fontSize: 16,
-    color: '#FFFFFF',
-    fontWeight: '600',
+  bazinCard: {
+    padding: 20,
+    borderRadius: 16,
+    borderWidth: 1,
+    borderColor: colors.border,
   },
-  noDataText: {
+  bazinRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    marginBottom: 20,
+  },
+  bazinItem: {
+    flex: 1,
+    alignItems: 'center',
+  },
+  bazinLabel: {
+    fontSize: 12,
+    color: colors.textSecondary,
+    marginBottom: 8,
+  },
+  bazinValue: {
+    fontSize: 18,
+    fontWeight: 'bold',
+    color: colors.text,
+  },
+  bazinDivider: {
+    width: 1,
+    height: '100%',
+    backgroundColor: colors.border,
+  },
+  marginSafetyRow: {
+    flexDirection: 'row',
+    justifyContent: 'center',
+    alignItems: 'center',
+    paddingTop: 16,
+    borderTopWidth: 1,
+    borderTopColor: 'rgba(255,255,255,0.1)',
+  },
+  marginSafetyLabel: {
     fontSize: 14,
-    color: '#95A5A6',
-    textAlign: 'center',
-    marginVertical: 24,
+    color: colors.textSecondary,
+    marginRight: 8,
+  },
+  marginSafetyValue: {
+    fontSize: 16,
+    fontWeight: 'bold',
+  },
+  aiButton: {
+    marginVertical: 20,
+    borderRadius: 12,
+    overflow: 'hidden',
+    elevation: 4,
+    shadowColor: colors.primary,
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.3,
+    shadowRadius: 8,
+  },
+  aiButtonGradient: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingVertical: 16,
+  },
+  aiButtonText: {
+    color: '#000',
+    fontSize: 16,
+    fontWeight: 'bold',
+  },
+  legendContainer: {
+    marginTop: 24,
+    padding: 16,
+    backgroundColor: colors.surface,
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: colors.border,
+  },
+  legendTitle: {
+    fontSize: 14,
+    fontWeight: 'bold',
+    color: colors.text,
+    marginBottom: 12,
+  },
+  legendRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginBottom: 8,
+  },
+  legendDot: {
+    width: 12,
+    height: 12,
+    borderRadius: 6,
+    marginRight: 8,
+  },
+  legendText: {
+    fontSize: 13,
+    color: colors.textSecondary,
   },
 });
 

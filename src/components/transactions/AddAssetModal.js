@@ -11,6 +11,7 @@ import {
   ActivityIndicator,
 } from 'react-native';
 import colors from '../../styles/colors';
+import HapticsService from '../../services/HapticsService';
 
 
 const assetTypes = ['Ação', 'FII', 'Stock', 'REIT', 'ETF', 'Crypto'];
@@ -47,7 +48,7 @@ const AddAssetModal = ({ visible, onClose, onAddAsset }) => {
       return;
     }
 
-    const qty = parseFloat(quantity);
+    const qty = parseFloat(quantity.replace(',', '.').replace(/\s/g, ''));
     const avgPrice = parseFloat(averagePrice.replace(',', '.').replace(/\s/g, ''));
 
     if (isNaN(qty) || isNaN(avgPrice) || qty <= 0 || avgPrice <= 0) {
@@ -62,13 +63,16 @@ const AddAssetModal = ({ visible, onClose, onAddAsset }) => {
         name,
         type,
         country,
+        currency: country === '🇺🇸' ? 'USD' : 'BRL',
         quantity: qty,
         averagePrice: avgPrice,
         purchaseDate: date.toISOString(),
         currentPrice: avgPrice, // Initialize currentPrice same as averagePrice
       };
 
+      console.log('📝 [ADD ASSET] Payload:', JSON.stringify(newAsset, null, 2));
       await onAddAsset(newAsset);
+      HapticsService.success();
       Alert.alert('Sucesso', `Ativo ${newAsset.ticker} adicionado ao portfólio!`);
       resetForm();
       onClose();
@@ -110,7 +114,7 @@ const AddAssetModal = ({ visible, onClose, onAddAsset }) => {
                 placeholder="Ex: PETR4"
                 placeholderTextColor={colors.textSecondary}
                 value={ticker}
-                onChangeText={setTicker}
+                onChangeText={(text) => setTicker(text.toUpperCase())}
                 autoCapitalize="characters"
               />
             </View>
@@ -166,9 +170,9 @@ const AddAssetModal = ({ visible, onClose, onAddAsset }) => {
               <Text style={styles.label}>Quantidade </Text>
               <TextInput
                 style={styles.input}
-                placeholder="Ex: 100"
+                placeholder="Ex: 100 ou 0.45"
                 placeholderTextColor={colors.textSecondary}
-                keyboardType="numeric"
+                keyboardType="decimal-pad"
                 value={quantity}
                 onChangeText={setQuantity}
               />

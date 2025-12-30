@@ -12,16 +12,20 @@ import {
 } from 'react-native';
 import colors from '../../styles/colors';
 import { SafeAreaView } from 'react-native-safe-area-context';
+import { Ionicons } from '@expo/vector-icons';
+import LinearGradient from '../../components/common/Gradient';
 import { formatCurrency, formatPercent } from '../../utils/formatters';
 import { usePortfolio } from '../../contexts/PortfolioContext';
-import marketService from '../../services/marketService';
+import { fetchQuote, fetchExchangeRate } from '../../services/marketService';
 import { getFilteredPortfolioStats } from '../../domain/portfolio/filteredPortfolioStats';
 import AssetCard from '../../components/common/AssetCard';
+import PrivacyAwareText from '../../components/common/PrivacyAwareText';
+import { generateAndSharePortfolioReport } from '../../services/reportService';
 
 const { width } = Dimensions.get('window');
 
 const PortfolioScreen = ({ navigation }) => {
-  const { portfolio, loading: portfolioLoading, error: portfolioError } = usePortfolio();
+  const { portfolio, loading: portfolioLoading, error: portfolioError, isPrivacyModeEnabled } = usePortfolio();
   const [searchQuery, setSearchQuery] = useState('');
   const [selectedType, setSelectedType] = useState('all'); // all, Ação, FII, Stock, REIT, ETF, Crypto
   const [sortBy, setSortBy] = useState('profit'); // profit, name, value
@@ -41,11 +45,11 @@ const PortfolioScreen = ({ navigation }) => {
       }
       if (showLoader) setIsFetchingPrices(true);
 
-      const rate = await marketService.getExchangeRateUSDToBRL();
+      const rate = await fetchExchangeRate();
       setExchangeRate(rate);
 
       // 3. Buscar cotações para cada ativo no portfólio
-      const pricesPromises = portfolio.map(asset => marketService.getAssetQuote(asset));
+      const pricesPromises = portfolio.map(asset => fetchQuote(asset));
       const results = await Promise.allSettled(pricesPromises);
 
       const pricesMap = results.reduce((acc, result, index) => {
@@ -128,7 +132,7 @@ const PortfolioScreen = ({ navigation }) => {
 
   const stats = useMemo(() =>
     getFilteredPortfolioStats(filteredAssets, realPrices),
-  [filteredAssets, realPrices]);
+    [filteredAssets, realPrices]);
 
   if (portfolioLoading) { // 5. Usar o loading principal do contexto
     return (
@@ -153,36 +157,48 @@ const PortfolioScreen = ({ navigation }) => {
             <Text style={styles.title}>Portfólio</Text>
             <Text style={styles.subtitle}>{stats.count} ativos</Text>
           </View>
-          {/* O botão de adicionar foi removido conforme solicitado.
-              A funcionalidade agora está centralizada na tela de Histórico.
-          */}
+          <View style={{ flexDirection: 'row', gap: 8 }}>
+            <TouchableOpacity
+              style={styles.manageButton}
+              onPress={() => navigation.navigate('AssetManagement')}
+            >
+              <Ionicons name="options-outline" size={18} color="#fff" />
+              <Text style={styles.manageButtonText}>Gerenciar</Text>
+            </TouchableOpacity>
+          </View>
         </View>
 
         {isFetchingPrices && <ActivityIndicator style={{ marginVertical: 10 }} color={colors.primary} />}
 
-        <View style={styles.statsCard}>
-          <View style={styles.statItem}>
-            <Text style={styles.statLabel}>Total Investido</Text>
-            <Text style={styles.statValue}>{formatCurrency(stats.invested)}</Text>
+        <LinearGradient
+          colors={[colors.surface, '#0F172A']}
+          style={styles.statsCard}
+        >
+          <View style={styles.statsMain}>
+            <Text style={styles.statsMainLabel}>Patrimônio Total</Text>
+            <PrivacyAwareText style={styles.statsMainValue}>{formatCurrency(stats.current)}</PrivacyAwareText>
+            <View style={styles.statsProfitRow}>
+              <Text style={[styles.statsProfitPercent, { color: stats.profit >= 0 ? colors.success : colors.danger }]}>
+                {stats.profit >= 0 ? '↑' : '↓'} {formatPercent(Math.abs(stats.profitPercent))}
+              </Text>
+              <Text style={styles.statsProfitValue}> ({formatCurrency(stats.profit)})</Text>
+            </View>
           </View>
-          <View style={styles.statDivider} />
-          <View style={styles.statItem}>
-            <Text style={styles.statLabel}>Saldo Atual</Text>
-            <Text style={styles.statValue}>{formatCurrency(stats.current)}</Text>
+
+          <View style={styles.statsSecondary}>
+            <View style={styles.statsSecItem}>
+              <Text style={styles.statsSecLabel}>Investido</Text>
+              <PrivacyAwareText style={styles.statsSecValue}>{formatCurrency(stats.invested)}</PrivacyAwareText>
+            </View>
+            <View style={styles.statsSecDivider} />
+            <View style={styles.statsSecItem}>
+              <Text style={styles.statsSecLabel}>Rentab. Geral</Text>
+              <Text style={[styles.statsSecValue, { color: stats.profit >= 0 ? colors.success : colors.danger }]}>
+                {formatPercent(stats.profitPercent)}
+              </Text>
+            </View>
           </View>
-          <View style={styles.statDivider} />
-          <View style={[styles.statItem, { flex: 1.2 }]}>
-            <Text style={[styles.statLabel, { color: stats.profit >= 0 ? colors.success : colors.danger, flexWrap: 'wrap' }]}>
-              {stats.profit >= 0 ? 'Lucro' : 'Prejuízo'}
-            </Text>
-            <Text style={[styles.statValue, { color: stats.profit >= 0 ? colors.success : colors.danger }]}>
-              {formatCurrency(stats.profit)}
-            </Text>
-            <Text style={[styles.statPercent, { color: stats.profit >= 0 ? colors.success : colors.danger }]}>
-              {stats.profit >= 0 ? '▲' : '▼'} {formatPercent(Math.abs(stats.profitPercent))}
-            </Text>
-          </View>
-        </View>
+        </LinearGradient>
 
         <View style={styles.searchContainer}>
           <Text style={styles.searchIcon}>🔍</Text>
@@ -227,14 +243,26 @@ const PortfolioScreen = ({ navigation }) => {
               style={[styles.filterChip, selectedType === 'Stock' && styles.filterChipActive]}
               onPress={() => setSelectedType('Stock')}
             >
-              <Text style={[styles.filterChipText, selectedType === 'Stock' && styles.filterChipTextActive]}>Stock</Text>
+              <Text style={[styles.filterChipText, selectedType === 'Stock' && styles.filterChipTextActive]}>Ações EUA</Text>
+            </TouchableOpacity>
+            <TouchableOpacity
+              style={[styles.filterChip, selectedType === 'REIT' && styles.filterChipActive]}
+              onPress={() => setSelectedType('REIT')}
+            >
+              <Text style={[styles.filterChipText, selectedType === 'REIT' && styles.filterChipTextActive]}>REITs</Text>
+            </TouchableOpacity>
+            <TouchableOpacity
+              style={[styles.filterChip, selectedType === 'ETF' && styles.filterChipActive]}
+              onPress={() => setSelectedType('ETF')}
+            >
+              <Text style={[styles.filterChipText, selectedType === 'ETF' && styles.filterChipTextActive]}>ETFs</Text>
             </TouchableOpacity>
             <TouchableOpacity
               style={[styles.filterChip, selectedType === 'Crypto' && styles.filterChipActive]}
               onPress={() => setSelectedType('Crypto')}
             >
               <Text style={[styles.filterChipText, selectedType === 'Crypto' && styles.filterChipTextActive]}>
-                Crypto
+                Cripto
               </Text>
             </TouchableOpacity>
           </ScrollView>
@@ -293,11 +321,17 @@ const PortfolioScreen = ({ navigation }) => {
                   key={asset.ticker}
                   asset={asset}
                   currentPrice={priceInBRL}
-                  onPress={() =>
+                  onPress={() => {
+                    console.log(`[PORTFOLIO NAV] Navigating to AssetDetails for ${asset.ticker}:`, {
+                      symbol: asset.ticker,
+                      asset: asset,
+                      currentPrice: priceInBRL
+                    });
                     navigation.navigate('AssetDetails', {
-                      ticker: asset.ticker,
-                    })
-                  }
+                      symbol: asset.ticker,
+                      asset: asset,
+                    });
+                  }}
                 />
               );
             })
@@ -311,7 +345,7 @@ const PortfolioScreen = ({ navigation }) => {
 };
 
 const styles = StyleSheet.create({
-  container: { flex: 1, backgroundColor: '#0F172A' },
+  container: { flex: 1, backgroundColor: colors.background },
   scrollView: { flex: 1 },
   loadingContainer: { flex: 1, justifyContent: 'center', alignItems: 'center' },
   loadingText: { marginTop: 16, fontSize: 16, color: colors.text },
@@ -324,43 +358,61 @@ const styles = StyleSheet.create({
   },
   title: { fontSize: 28, fontWeight: '800', color: colors.text },
   subtitle: { fontSize: 14, color: colors.textSecondary, marginTop: 4 },
-  addButton: {
-    backgroundColor: colors.primary,
-    paddingHorizontal: 20,
-    paddingVertical: 10,
-    borderRadius: 20,
+  manageButton: {
+    backgroundColor: '#1E293B',
+    paddingHorizontal: 16,
+    paddingVertical: 8,
+    borderRadius: 12,
+    flexDirection: 'row',
+    alignItems: 'center',
+    borderWidth: 1,
+    borderColor: 'rgba(255,255,255,0.1)',
   },
-  addButtonText: { color: '#ffffff', fontSize: 14, fontWeight: '700' },
+  manageButtonText: { color: '#ffffff', fontSize: 13, fontWeight: '700', marginLeft: 6 },
 
   statsCard: {
-    flexDirection: 'row',
     marginHorizontal: 20,
-    marginBottom: 20,
-    padding: 16,
-    backgroundColor: colors.surface,
-    borderRadius: 16,
+    marginBottom: 24,
+    padding: 24,
+    borderRadius: 24,
     borderWidth: 1,
-    borderColor: colors.border,
+    borderColor: 'rgba(255,255,255,0.05)',
   },
-  statItem: { flex: 1, alignItems: 'center' },
-  statLabel: { fontSize: 12, color: colors.textSecondary, marginBottom: 6 },
-  statValue: { fontSize: 16, fontWeight: '700', color: colors.text },
-  statPercent: { fontSize: 12, fontWeight: '600', marginTop: 2 },
-  statDivider: { width: 1, backgroundColor: colors.border },
+  statsMain: {
+    alignItems: 'flex-start',
+    marginBottom: 24,
+  },
+  statsMainLabel: { fontSize: 13, color: colors.textSecondary, marginBottom: 8, fontWeight: '600', textTransform: 'uppercase', letterSpacing: 1 },
+  statsMainValue: { fontSize: 34, fontWeight: '800', color: colors.text, letterSpacing: -1 },
+  statsProfitRow: { flexDirection: 'row', alignItems: 'center', marginTop: 4 },
+  statsProfitPercent: { fontSize: 14, fontWeight: '700' },
+  statsProfitValue: { fontSize: 14, color: colors.textSecondary, fontWeight: '500' },
+
+  statsSecondary: {
+    flexDirection: 'row',
+    backgroundColor: 'rgba(255,255,255,0.03)',
+    borderRadius: 16,
+    padding: 16,
+    justifyContent: 'space-between'
+  },
+  statsSecItem: { flex: 1, alignItems: 'center' },
+  statsSecLabel: { fontSize: 11, color: colors.textMuted, marginBottom: 4, fontWeight: '700' },
+  statsSecValue: { fontSize: 14, fontWeight: '700', color: colors.text },
+  statsSecDivider: { width: 1, backgroundColor: 'rgba(255,255,255,0.1)', height: '70%', alignSelf: 'center' },
 
   searchContainer: {
     flexDirection: 'row',
     alignItems: 'center',
     marginHorizontal: 20,
-    marginBottom: 16,
+    marginBottom: 20,
     paddingHorizontal: 16,
-    height: 50,
-    backgroundColor: colors.surface,
-    borderRadius: 25,
+    height: 46,
+    backgroundColor: '#1E293B',
+    borderRadius: 12,
     borderWidth: 1,
-    borderColor: colors.border,
+    borderColor: 'rgba(255,255,255,0.05)',
   },
-  searchIcon: { fontSize: 18, marginRight: 8 },
+  searchIcon: { fontSize: 16, marginRight: 8, opacity: 0.6 },
   searchInput: { flex: 1, fontSize: 15, color: colors.text },
   clearIcon: { fontSize: 18, color: colors.textSecondary, padding: 4 },
 
@@ -368,35 +420,35 @@ const styles = StyleSheet.create({
   filterLabel: { fontSize: 14, fontWeight: '600', color: colors.text, marginBottom: 8 },
   filterChip: {
     paddingHorizontal: 16,
-    paddingVertical: 8,
-    marginRight: 8,
-    backgroundColor: colors.surface,
-    borderRadius: 20,
+    paddingVertical: 10,
+    marginRight: 10,
+    backgroundColor: '#1E293B',
+    borderRadius: 12,
     borderWidth: 1,
-    borderColor: colors.border,
+    borderColor: 'rgba(255,255,255,0.05)',
   },
   filterChipActive: { backgroundColor: colors.primary, borderColor: colors.primary },
   filterChipText: { fontSize: 13, fontWeight: '600', color: colors.textSecondary },
-  filterChipTextActive: { color: '#ffffff' },
+  filterChipTextActive: { color: '#000' },
 
   sortSection: { marginHorizontal: 20, marginBottom: 20 },
   sortLabel: { fontSize: 14, fontWeight: '600', color: colors.text, marginBottom: 8 },
-  sortButtons: { flexDirection: 'row', justifyContent: 'space-between' },
+  sortButtons: { flexDirection: 'row', gap: 10 },
   sortButton: {
     flex: 1,
     paddingVertical: 10,
-    backgroundColor: colors.surface,
-    borderRadius: 12,
+    backgroundColor: '#1E293B',
+    borderRadius: 10,
     borderWidth: 1,
-    borderColor: colors.border,
+    borderColor: 'rgba(255,255,255,0.05)',
     alignItems: 'center',
   },
-  sortButtonActive: { backgroundColor: colors.primary + '20', borderColor: colors.primary },
-  sortButtonText: { fontSize: 13, fontWeight: '600', color: colors.textSecondary },
-  sortButtonTextActive: { color: colors.primary },
+  sortButtonActive: { backgroundColor: colors.primary, borderColor: colors.primary },
+  sortButtonText: { fontSize: 12, fontWeight: '700', color: colors.textSecondary },
+  sortButtonTextActive: { color: '#000' },
 
-  assetsSection: { paddingHorizontal: 20 },
-  assetsSectionTitle: { fontSize: 16, fontWeight: '600', color: colors.text, marginBottom: 12 },
+  assetsSection: { paddingHorizontal: 20, marginTop: 12 },
+  assetsSectionTitle: { fontSize: 14, fontWeight: '700', color: colors.textSecondary, marginBottom: 16, textTransform: 'uppercase', letterSpacing: 0.5 },
   emptyState: { alignItems: 'center', paddingVertical: 60 },
   emptyStateIcon: { fontSize: 48, marginBottom: 16 },
   emptyStateText: { fontSize: 18, fontWeight: '600', color: colors.text, marginBottom: 8 },

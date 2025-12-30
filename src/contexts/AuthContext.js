@@ -1,5 +1,6 @@
 import React, { createContext, useState, useContext, useEffect } from 'react';
 import { authService } from '../services/authService';
+import BiometricService from '../services/BiometricService';
 
 // 1. Cria o Contexto
 const AuthContext = createContext();
@@ -22,8 +23,18 @@ export const AuthProvider = ({ children }) => {
     try {
       const isAuthenticated = await authService.isAuthenticated();
       if (isAuthenticated) {
-        const userData = await authService.getUser();
-        setUser(userData);
+        // ✅ BIOMETRIA: Solicita autenticação se disponível
+        const bioSuccess = await BiometricService.authenticate();
+
+        if (bioSuccess) {
+          const userData = await authService.getUser();
+          setUser(userData);
+        } else {
+          // Se falhar na biometria, não loga (poderia redirecionar para senha)
+          console.warn('Falha na autenticação biométrica');
+          // Opcional: Deslogar para forçar login com senha
+          // await authService.logout();
+        }
       }
     } catch (error) {
       console.error('Erro ao verificar autenticação:', error);

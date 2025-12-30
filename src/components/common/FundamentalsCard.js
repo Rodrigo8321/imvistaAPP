@@ -10,6 +10,11 @@ import colors from '../../styles/colors';
 const FundamentalsCard = ({ asset, type = 'Ação' }) => {
   const { fundamentals } = asset;
 
+  // Log para identificar problemas com ROE
+  console.log(`[LOG ROE] FundamentalsCard - Asset: ${asset.symbol || 'N/A'}, Fundamentals:`, fundamentals);
+  console.log(`[LOG ROE] ROE value: ${fundamentals.roe}, Type: ${typeof fundamentals.roe}`);
+  console.log(`[LOG ROE] ReturnOnEquity value: ${fundamentals.returnOnEquity}, Type: ${typeof fundamentals.returnOnEquity}`);
+
   // Indicadores para Ações
   const stockIndicators = [
     { label: 'P/L', value: fundamentals.pl, tooltip: 'Preço/Lucro' },

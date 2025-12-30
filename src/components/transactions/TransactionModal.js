@@ -13,6 +13,7 @@ import {
 } from 'react-native';
 import colors from '../../styles/colors';
 import { transactionService } from '../../services/transactionService';
+import HapticsService from '../../services/HapticsService';
 
 
 const DATE_INPUT_FORMAT = /^\d{2}\/\d{2}\/\d{4}$/; // DD/MM/YYYY
@@ -95,7 +96,7 @@ const TransactionModal = ({ visible, onClose, portfolio, onTransactionAdded, ini
     }
 
     // Validate and parse quantity and price
-    const qty = parseFloat(quantity);
+    const qty = parseFloat(quantity.replace(',', '.').replace(/\s/g, ''));
     const price = parseFloat(unitPrice.replace(',', '.').replace(/\s/g, ''));
 
     if (qty <= 0 || price <= 0) {
@@ -125,9 +126,11 @@ const TransactionModal = ({ visible, onClose, portfolio, onTransactionAdded, ini
         date: parsedDate.toISOString(),
       };
 
+      console.log('📝 [NEW TRANSACTION] Payload:', JSON.stringify(transaction, null, 2));
       const success = await transactionService.addTransaction(transaction);
 
       if (success) {
+        HapticsService.success();
         Alert.alert('Sucesso', `${type} de ${selectedAsset.ticker} registrada!`, [
           {
             text: 'OK',
@@ -195,12 +198,12 @@ const TransactionModal = ({ visible, onClose, portfolio, onTransactionAdded, ini
               <View style={styles.pickerContainer}>
                 <Text style={styles.pickerTitle}>Selecione um Ativo</Text>
                 <ScrollView style={styles.assetList}>
-{portfolio.map((asset, index) => (
-  <TouchableOpacity
-    key={`asset-picker-${asset.id}-${index}`}
-    style={styles.assetItem}
-    onPress={() => handleSelectAsset(asset)}
-  >
+                  {portfolio.map((asset, index) => (
+                    <TouchableOpacity
+                      key={`asset-picker-${asset.id}-${index}`}
+                      style={styles.assetItem}
+                      onPress={() => handleSelectAsset(asset)}
+                    >
                       <View style={styles.assetIconContainer}>
                         <Text style={styles.assetIcon}>
                           {asset.type === 'Ação' ? '📈' : '🏢'}
@@ -274,9 +277,9 @@ const TransactionModal = ({ visible, onClose, portfolio, onTransactionAdded, ini
                     <Text style={styles.inputLabel}>Quantidade</Text>
                     <TextInput
                       style={styles.input}
-                      placeholder="Ex: 100"
+                      placeholder="Ex: 100 ou 0.5"
                       placeholderTextColor={colors.textSecondary}
-                      keyboardType="numeric"
+                      keyboardType="decimal-pad"
                       value={quantity}
                       onChangeText={setQuantity}
                     />
@@ -298,7 +301,7 @@ const TransactionModal = ({ visible, onClose, portfolio, onTransactionAdded, ini
                     <View style={styles.totalPreview}>
                       <Text style={styles.totalLabel}>Total Estimado</Text>
                       <Text style={styles.totalValue}>
-                        R$ {(parseFloat(quantity) * parseFloat(unitPrice.replace(',', '.'))).toFixed(2)}
+                        R$ {(parseFloat(quantity.replace(',', '.')) * parseFloat(unitPrice.replace(',', '.'))).toFixed(2)}
                       </Text>
                     </View>
                   )}

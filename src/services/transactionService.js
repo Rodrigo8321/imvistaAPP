@@ -11,7 +11,13 @@ export const transactionService = {
   async getTransactions() {
     try {
       const data = await AsyncStorage.getItem(TRANSACTIONS_KEY);
-      return data ? JSON.parse(data) : [];
+      const transactions = data ? JSON.parse(data) : [];
+
+      // Sanitização em tempo de leitura para corrigir dados antigos "sujos"
+      return transactions.map(tx => ({
+        ...tx,
+        ticker: (tx.ticker || '').replace(/['"]/g, '').trim().toUpperCase()
+      }));
     } catch (error) {
       console.error('Erro ao carregar transações:', error);
       return [];
@@ -31,17 +37,21 @@ export const transactionService = {
       }
       const transactions = await this.getTransactions();
 
+      // Limpa o ticker: remove aspas, espaços e converte para maiúsculo
+      const cleanTicker = (transaction.ticker || '').replace(/['"]/g, '').trim().toUpperCase();
+
       // Gera ID único
       const newTransaction = {
         id: Date.now().toString(),
         ...transaction,
+        ticker: cleanTicker,
         date: transaction.date || new Date().toISOString(),
       };
 
       transactions.push(newTransaction);
       await AsyncStorage.setItem(TRANSACTIONS_KEY, JSON.stringify(transactions));
 
-      console.log(`✅ Transação adicionada: ${newTransaction.ticker}`);
+      console.log(`✅ Transação adicionada e limpa: ${newTransaction.ticker}`);
       return true;
     } catch (error) {
       console.error('Erro ao adicionar transação:', error);

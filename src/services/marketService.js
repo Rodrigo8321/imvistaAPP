@@ -5,10 +5,7 @@ import Brapi from 'brapi';
 
 // ========== CACHE MANAGER ==========
 const CACHE_KEYS = {
-  // NOTA: O cache de cotações individuais foi desativado intencionalmente
-  // para garantir dados em tempo real na tela de detalhes.
-  // Se a performance se tornar um problema, reativar o cache aqui
-  // e no orquestrador `fetchQuote` pode ser uma solução.
+  // NOTA: O cache de cotações individuais agora expira em 4 horas.
   QUOTE: 'market_quote_',
   EXCHANGE_RATE: 'exchange_rate_USDBRL',
 };
@@ -59,16 +56,15 @@ let brapiClient = null;
 const getBrapiClient = () => {
   if (!brapiClient) {
     console.log('[DEBUG] Initializing Brapi Client...');
-    console.log(`[DEBUG] Token loaded: ${
-      BRAPI_API_KEY ? `...${BRAPI_API_KEY.slice(-4)}` : '❌ NOT FOUND'
-    }`);
-    
+    console.log(`[DEBUG] Token loaded: ${BRAPI_API_KEY ? `...${BRAPI_API_KEY.slice(-4)}` : '❌ NOT FOUND'
+      }`);
+
     // ✅ Validação do token
     if (!BRAPI_API_KEY) {
       console.error('❌ CRITICAL ERROR: BRAPI_API_KEY is undefined!');
       throw new Error('❌ BRAPI_API_KEY não encontrado no .env. Verifique o arquivo .env e reinicie o app.');
     }
-    
+
     brapiClient = new Brapi({ apiKey: BRAPI_API_KEY });
     console.log('✅ Brapi client initialized successfully');
   }
@@ -79,10 +75,10 @@ const getBrapiClient = () => {
 const fetchBrapiQuote = async (ticker) => {
   try {
     console.log(`🇧🇷 Fetching Brapi: ${ticker}...`);
-    
+
     // Utiliza a SDK oficial da Brapi através do getter
     const client = getBrapiClient();
-    
+
     // ✅ Log do token para debug
     console.log('[DEBUG] Token being used for request:', BRAPI_API_KEY ? `...${BRAPI_API_KEY.slice(-4)}` : 'UNDEFINED');
 
@@ -304,7 +300,7 @@ export const fetchExchangeRate = async () => {
           return data;
         }
       }
-    } catch {}
+    } catch { }
 
     // Fallback final
     console.warn('⚠️ Using fallback exchange rate: 5.00');
@@ -313,32 +309,50 @@ export const fetchExchangeRate = async () => {
 };
 
 // ========== ORQUESTRADOR PRINCIPAL ==========
-export const fetchQuote = async (asset) => {
-  const cacheKey = `${CACHE_KEYS.QUOTE}${asset.ticker}`;
+export const fetchQuote = async (asset, forceRefresh = false) => {
+  const cleanTicker = (asset.ticker || '').replace(/['"]/g, '').trim().toUpperCase();
+  const cacheKey = `${CACHE_KEYS.QUOTE}${cleanTicker}`;
 
-  // O cache de cotações individuais está desativado para garantir dados em tempo real.
-  // A lógica de cache foi mantida, mas comentada, para fácil reativação se necessário.
   try {
+    // Verificação de Cache (pula se forceRefresh)
+    if (API_CONFIG.cache.enabled && !forceRefresh) {
+      const cached = await getFromCache(cacheKey);
+      if (cached) {
+        return cached;
+      }
+    }
+
     let quote;
 
     // Detecta tipo e chama API correta
     if (asset.type === 'Ação' || asset.type === 'FII') {
-      quote = await fetchBrapiQuote(asset.ticker);
+      quote = await fetchBrapiQuote(cleanTicker);
     } else if (asset.type === 'Stock' || asset.type === 'REIT' || asset.type === 'ETF') {
-      quote = await fetchAlphaVantageQuote(asset.ticker);
+      quote = await fetchAlphaVantageQuote(cleanTicker);
     } else if (asset.type === 'Crypto') {
-      quote = await fetchCoinGeckoQuote(asset.ticker);
+      quote = await fetchCoinGeckoQuote(cleanTicker);
     } else {
       throw new Error(`Unknown asset type: ${asset.type}`);
     }
 
+    // Salva no cache se habilitado
+    if (API_CONFIG.cache.enabled && quote && !quote.isMock) {
+      await saveToCache(cacheKey, quote);
+    }
+
     return quote;
   } catch (error) {
-    console.error(`❌ Failed to fetch ${asset.ticker}:`, error.message);
+    const isRateLimit = error.message.includes('frequency limit') || error.message.includes('rate limit');
+
+    if (isRateLimit) {
+      console.warn(`⏳ Rate limit for ${cleanTicker} (${asset.type}). Using fallback.`);
+    } else {
+      console.warn(`⚠️ Failed to fetch ${cleanTicker}: ${error.message}`);
+    }
 
     // Fallback para mock data
     if (API_CONFIG.fallback.useMockOnError) {
-      console.warn(`⚠️ Using mock data for ${asset.ticker}`);
+      if (!isRateLimit) console.log(`🔄 Using mock data for ${asset.ticker}`); // Only log extra info if not rate limit (too common)
       return {
         price: asset.currentPrice || 0,
         change: (asset.currentPrice || 0) - (asset.averagePrice || 0),

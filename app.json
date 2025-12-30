@@ -12,7 +12,10 @@
       "backgroundColor": "#ffffff"
     },
     "ios": {
-      "supportsTablet": true
+      "supportsTablet": true,
+      "infoPlist": {
+        "NSFaceIDUsageDescription": "Permitir o uso de FaceID para acessar o app com segurança."
+      }
     },
     "android": {
       "adaptiveIcon": {

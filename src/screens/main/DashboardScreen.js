@@ -2,7 +2,6 @@ import React, { useState, useMemo, useEffect } from 'react';
 import {
   View,
   Text,
-  TextInput,
   StyleSheet,
   ScrollView,
   RefreshControl,
@@ -11,46 +10,61 @@ import {
   Alert,
   Dimensions,
 } from 'react-native';
+import LinearGradient from '../../components/common/Gradient';
+import { Ionicons } from '@expo/vector-icons';
 import colors from '../../styles/colors';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { formatCurrency, formatPercent } from '../../utils/formatters';
-import { usePortfolio } from '../../contexts/PortfolioContext'; // 1. Usar o contexto do portfólio
-import { fetchQuote, fetchExchangeRate } from '../../services/marketService'; // 2. Importar fetchQuote
+import { usePortfolio } from '../../contexts/PortfolioContext';
+import { fetchQuote, fetchExchangeRate } from '../../services/marketService';
 import { calculateAssetsWithRealPrices, calculateCategoryAllocations, calculatePerformersBySegment } from '../../domain/portfolio/performanceCalculations';
 import { getPortfolioStats } from '../../domain/portfolio/portfolioStats';
-import TransactionModal from '../../components/transactions/TransactionModal';
-import PortfolioSummary from '../../components/dashboard/PortfolioSummary';
+import PrivacyAwareText from '../../components/common/PrivacyAwareText';
+import PortfolioChart from '../../components/charts/PortfolioChart';
 
-const { width } = Dimensions.get('window');
+const QuickAction = ({ icon, label, onPress }) => (
+  <TouchableOpacity style={styles.quickActionBtn} onPress={onPress}>
+    <View style={styles.quickActionIconContainer}>
+      <Text style={{ fontSize: 24 }}>{icon}</Text>
+    </View>
+    <Text style={styles.quickActionLabel}>{label}</Text>
+  </TouchableOpacity>
+);
+
+
+
+const FinancialGoal = ({ current, target }) => {
+  const percent = Math.min((current / target) * 100, 100);
+  return (
+    <View style={styles.goalCard}>
+      <View style={styles.goalHeader}>
+        <Text style={styles.goalTitle}>Meta de Patrimônio</Text>
+        <Text style={styles.goalTarget}>Alvo: {formatCurrency(target)}</Text>
+      </View>
+      <View style={styles.goalProgressContainer}>
+        <LinearGradient
+          colors={[colors.primary, '#00A86B']}
+          start={{ x: 0, y: 0 }}
+          end={{ x: 1, y: 0 }}
+          style={[styles.goalProgressFill, { width: `${percent}%` }]}
+        />
+      </View>
+      <View style={styles.goalFooter}>
+        <Text style={styles.goalPercent}>{formatPercent(percent)}</Text>
+        <Text style={styles.goalRemaining}>Faltam {formatCurrency(Math.max(target - current, 0))}</Text>
+      </View>
+    </View>
+  );
+};
 
 const DashboardScreen = ({ navigation }) => {
-  // =================================================================
-  // ESTADOS E CONTEXTO
-  // =================================================================
-
-  // Obtém o portfólio e o estado de carregamento do PortfolioContext.
-  const { portfolio, loading: portfolioLoading } = usePortfolio();
-
-  // Estado para controlar o "puxar para atualizar".
+  const { portfolio, loading: portfolioLoading, isPrivacyModeEnabled, togglePrivacyMode } = usePortfolio();
   const [refreshing, setRefreshing] = useState(false);
-  // Estado de carregamento local para a busca de preços em tempo real.
   const [loading, setLoading] = useState(true);
-  // Armazena os preços atuais dos ativos buscados pela API.
   const [realPrices, setRealPrices] = useState({});
-  // Armazena a taxa de câmbio USD -> BRL.
   const [exchangeRate, setExchangeRate] = useState(5.0);
-  // Filtros selecionados para a lista de melhores/piores.
-  const [selectedFilter, setSelectedFilter] = useState(['acao']);
+  const [btcPrice, setBtcPrice] = useState(null);
 
-  // =================================================================
-  // FUNÇÕES DE DADOS
-  // =================================================================
-
-  /**
-   * Busca os preços em tempo real para todos os ativos do portfólio.
-   * Utiliza `Promise.allSettled` para garantir que, mesmo que uma API falhe, as outras continuem.
-   * @param {boolean} showLoader - Controla se o indicador de carregamento principal deve ser exibido.
-   */
   const loadRealData = async (showLoader = true) => {
     if (!portfolio || portfolio.length === 0) {
       setLoading(false);
@@ -59,357 +73,225 @@ const DashboardScreen = ({ navigation }) => {
     }
     if (showLoader) setLoading(true);
 
-    // 1. Busca a taxa de câmbio mais recente.
-    const rate = await fetchExchangeRate();
-    setExchangeRate(rate);
+    try {
+      const rate = await fetchExchangeRate();
+      setExchangeRate(rate);
 
-    // 2. Cria um array de promessas para buscar a cotação de cada ativo.
-    const pricesPromises = portfolio.map(asset => fetchQuote(asset));
-    const results = await Promise.allSettled(pricesPromises);
-
-    // 3. Mapeia os resultados bem-sucedidos para um objeto { ticker: priceData }.
-    const pricesMap = results.reduce((acc, result, index) => {
-      if (result.status === 'fulfilled') {
-        acc[portfolio[index].ticker] = result.value;
+      // Buscar Bitcoin
+      try {
+        const btcData = await fetchQuote({ ticker: 'BTC', type: 'Crypto' });
+        setBtcPrice(btcData.price);
+      } catch (btcError) {
+        console.error('Erro ao buscar BTC:', btcError);
       }
-      return acc;
-    }, {});
 
-    // 4. Atualiza o estado com os preços e finaliza o carregamento.
-    setRealPrices(pricesMap);
-    setLoading(false);
-    setRefreshing(false);
+      const pricesPromises = portfolio.map(asset => fetchQuote(asset));
+      const results = await Promise.allSettled(pricesPromises);
+
+      const pricesMap = results.reduce((acc, result, index) => {
+        if (result.status === 'fulfilled') {
+          acc[portfolio[index].ticker] = result.value;
+        }
+        return acc;
+      }, {});
+
+      setRealPrices(pricesMap);
+    } catch (e) {
+      console.error("Erro ao carregar dados reais", e);
+    } finally {
+      setLoading(false);
+      setRefreshing(false);
+    }
   };
 
-  // =================================================================
-  // CÁLCULOS E MEMORIZAÇÃO (useMemo)
-  // =================================================================
-
-  /**
-   * Memoiza a combinação dos dados do portfólio com os preços em tempo real.
-   * Calcula o lucro/prejuízo para cada ativo individualmente.
-   */
   const assetsWithRealPrices = useMemo(() => {
     return calculateAssetsWithRealPrices(portfolio, realPrices, exchangeRate);
   }, [portfolio, realPrices, exchangeRate]);
 
-  /**
-   * Memoiza os 3 melhores e piores ativos de cada segmento com base na sua variação diária.
-   * Segmentos: acao, fii, stock, reit, crypto, etf.
-   */
   const performersBySegment = useMemo(() => {
     return calculatePerformersBySegment(assetsWithRealPrices);
   }, [assetsWithRealPrices]);
 
-  // Mapa para exibir nomes de filtros amigáveis.
-  const filterMap = { acao: 'Ação', fii: 'FII', stock: 'Stock', reit: 'REIT', etf: 'ETF', crypto: 'Crypto' };
-  // Estado para controlar a visibilidade do modal de nova transação.
-  const [transactionModalVisible, setTransactionModalVisible] = useState(false);
-  const [transactionDateInput, setTransactionDateInput] = useState(null);
-
-  // =================================================================
-  // EFEITOS (useEffect)
-  // =================================================================
-
-  // Dispara a busca de dados em tempo real assim que o portfólio do contexto termina de carregar.
   useEffect(() => {
     if (!portfolioLoading) loadRealData();
   }, [portfolioLoading]);
 
-  // =================================================================
-  // CÁLCULOS ADICIONAIS (MEMORIZADOS)
-  // =================================================================
+  const stats = useMemo(() => {
+    const calculatedStats = getPortfolioStats({ portfolio, realPrices, exchangeRate });
+    console.log('📊 Dashboard Stats:', JSON.stringify(calculatedStats, null, 2));
+    return calculatedStats;
+  }, [portfolio, realPrices, exchangeRate]);
 
-  // Calcula as estatísticas gerais do portfólio (valor total, lucro, etc.).
-  const stats = useMemo(() =>
-    getPortfolioStats({ portfolio, realPrices, exchangeRate }),
-  [portfolio, realPrices, exchangeRate]);
-
-  // Calcula a alocação percentual para cada tipo de ativo (Ação, FII, etc.).
   const categoryAllocations = useMemo(() => {
     return calculateCategoryAllocations(portfolio, realPrices, exchangeRate);
   }, [portfolio, realPrices, exchangeRate]);
 
-  // =================================================================
-  // HANDLERS DE EVENTOS
-  // =================================================================
-
-  // Abre o modal para registrar uma nova transação.
-  const handleNewTransaction = () => {
-    setTransactionModalVisible(true);
-  };
-
-  // Chamado quando o modal de transação é fechado ou uma transação é adicionada.
-  const handleTransactionAdded = () => {
-    setTransactionModalVisible(false);
-    // O recarregamento dos dados agora é feito na própria tela de histórico.
-  };
-
-  /**
-   * Handler para o "puxar para atualizar".
-   * Reinicia o estado de refreshing e chama a função para buscar dados.
-   */
   const onRefresh = () => {
     setRefreshing(true);
-    loadRealData(false); // `false` para não mostrar o loading principal, apenas o do RefreshControl.
+    loadRealData(false);
   };
 
-  // Handler para o botão de atualização manual.
   const handleManualRefresh = () => {
     onRefresh();
     Alert.alert('Atualizado', 'Os dados do portfólio foram atualizados.');
   };
 
-  // =================================================================
-  // RENDERIZAÇÃO DO COMPONENTE
-  // =================================================================
-
-  // Exibe uma tela de carregamento enquanto o portfólio ou os preços estão sendo buscados.
   if (loading || portfolioLoading) {
     return (
-      <SafeAreaView style={styles.container}>
-        <View style={styles.loadingContainer}>
-          <View style={styles.loadingCard}>
-            <ActivityIndicator size="large" color={colors.primary} />
-            <Text style={styles.loadingText}>Carregando Portfolio</Text>
-            <Text style={styles.loadingSubtext}>Buscando cotações em tempo real...</Text>
-          </View>
-        </View>
-      </SafeAreaView>
+      <View style={[styles.container, styles.center]}>
+        <ActivityIndicator size="large" color={colors.primary} />
+        <Text style={{ color: colors.textSecondary, marginTop: 16 }}>Sincronizando Portfólio...</Text>
+      </View>
     );
   }
-
 
   return (
     <SafeAreaView style={styles.container}>
       <ScrollView
         style={styles.scrollView}
+        refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor={colors.primary} />}
         showsVerticalScrollIndicator={false}
-        refreshControl={
-          <RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor={colors.primary} />
-        }
       >
-        {/* HERO SECTION - Portfolio Value */}
-        <View style={styles.heroSection}>
-          <View style={styles.heroHeader}>
-            <View>
-              <Text style={styles.heroGreeting}>Olá! Investidor 👋</Text>
-              <Text style={styles.heroSubtitle}>Seu patrimônio hoje</Text>
-            </View>
-          {/* Botão de acesso à configuração removido conforme solicitado */}
-          {/*
-          <TouchableOpacity
-              style={styles.settingsButton}
-              onPress={() => navigation.navigate('Settings')}
-            >
-              <Text style={styles.settingsIcon}>⚙️</Text>
+        <View style={styles.header}>
+          <View>
+            <Text style={styles.greeting}>Olá, Investidor</Text>
+            <Text style={styles.date}>{new Date().toLocaleDateString('pt-BR', { weekday: 'long', day: 'numeric', month: 'long' })}</Text>
+            <TouchableOpacity style={styles.usdBadge}>
+              <Text style={styles.usdText}>🇺🇸 USD {formatCurrency(exchangeRate)}</Text>
             </TouchableOpacity>
-          */}
+            {btcPrice && (
+              <TouchableOpacity style={styles.btcBadge}>
+                <Text style={styles.btcText}>₿ BTC ${btcPrice.toLocaleString('en-US', { maximumFractionDigits: 0 })}</Text>
+              </TouchableOpacity>
+            )}
           </View>
-
-          <PortfolioSummary />
-
-          <View style={styles.heroValueContainer}>
-            <Text style={styles.heroValue}>{formatCurrency(stats.totalCurrent)}</Text>
-            <View style={styles.heroProfitContainer}>
-              <View style={[
-                styles.heroProfitBadge,
-                { backgroundColor: stats.profit >= 0 ? colors.success + '20' : colors.danger + '20' }
-              ]}>
-                <Text style={[
-                  styles.heroProfitText,
-                  { color: stats.profit >= 0 ? colors.success : colors.danger }
-                ]}>
-                  {stats.profit >= 0 ? '▲' : '▼'} {formatCurrency(Math.abs(stats.profit))} ({formatPercent(Math.abs(stats.profitPercent))})
-                </Text>
-              </View>
-            </View>
-          </View>
-
-          {/* Quick Stats */}
-          <View style={styles.quickStats}>
-            <View style={styles.quickStatItem}>
-              <Text style={styles.quickStatLabel}>Total Investido</Text>
-              <Text style={styles.quickStatValue}>{formatCurrency(stats.totalInvested)}</Text>
-            </View>
-            <View style={styles.quickStatDivider} />
-            <View style={styles.quickStatItem}>
-              <Text style={styles.quickStatLabel}>Ativos</Text>
-              <Text style={styles.quickStatValue}>{portfolio.length}</Text>
-            </View>
-            <View style={styles.quickStatDivider} />
-            <View style={styles.quickStatItem}>
-              <Text style={styles.quickStatLabel}>Dividendos (Mês)</Text>
-              <Text style={styles.quickStatValue}>{formatCurrency(stats.totalMonthlyDividends)}</Text>
-            </View>
+          <View style={{ flexDirection: 'row', gap: 8 }}>
+            <TouchableOpacity onPress={togglePrivacyMode} style={styles.iconButton}>
+              <Text style={{ color: colors.primary, fontSize: 18 }}>{isPrivacyModeEnabled ? '🙈' : '👁️'}</Text>
+            </TouchableOpacity>
+            <TouchableOpacity onPress={handleManualRefresh} style={styles.iconButton}>
+              <Text style={{ color: colors.primary }}>🔄</Text>
+            </TouchableOpacity>
+            <TouchableOpacity onPress={() => navigation.navigate('Settings')} style={styles.iconButton}>
+              <Ionicons name="settings-sharp" size={18} color={colors.primary} />
+            </TouchableOpacity>
           </View>
         </View>
 
-        {/* INVESTIMENTO EM USD */}
-        <View style={styles.usdInvestmentSection}>
-          <View style={styles.usdInvestmentCard}>
-            <Text style={styles.usdInvestmentTitle}>Investimento em DOLLAR</Text>
-            <Text style={styles.usdInvestmentSubtitle}>STOCK´S, REITs e ETFs</Text>
+        {/* HERO CARD PATRIMONIO */}
+        <LinearGradient
+          colors={colors.heroGradient}
+          start={{ x: 0, y: 0 }}
+          end={{ x: 1, y: 1 }}
+          style={styles.heroCard}
+        >
+          <Text style={styles.heroLabel}>Patrimônio Total</Text>
+          <PrivacyAwareText style={styles.heroValue}>{formatCurrency(stats.totalCurrent)}</PrivacyAwareText>
+          <View style={styles.heroDailyRow}>
+            <Ionicons
+              name={stats.dailyProfitBRL >= 0 ? "trending-up" : "trending-down"}
+              size={12}
+              color={stats.dailyProfitBRL >= 0 ? colors.success : colors.danger}
+            />
+            <Text style={[styles.heroDailyText, { color: stats.dailyProfitBRL >= 0 ? colors.success : colors.danger }]}>
+              {stats.dailyProfitBRL >= 0 ? '+' : ''}{formatCurrency(stats.dailyProfitBRL)} hoje
+            </Text>
+          </View>
 
-            <View style={[
-                styles.dailyChangeBadge,
-                { backgroundColor: stats.dailyProfitBRL >= 0 ? colors.success + '20' : colors.danger + '20' }
-              ]}>
-                <Text style={[
-                  styles.dailyChangeText,
-                  { color: stats.dailyProfitBRL >= 0 ? colors.success : colors.danger }
-                ]}>
-                  Hoje: {stats.dailyProfitBRL >= 0 ? '▲' : '▼'} {formatCurrency(Math.abs(stats.dailyProfitBRL))}
-                </Text>
-              </View>
-
-            <View style={styles.usdInvestmentValues}>
-              <View style={styles.usdInvestmentValue}>
-                <Text style={styles.usdInvestmentLabel}>USD</Text>
-                <Text style={styles.usdInvestmentAmount}>${stats.investedUSD.toFixed(2)}</Text>
-              </View>
-              <View style={styles.usdInvestmentDivider} />
-              <View style={styles.usdInvestmentValue}>
-                <Text style={styles.usdInvestmentLabel}>BRL</Text>
-                <Text style={styles.usdInvestmentAmount}>{formatCurrency(stats.investedUSD * exchangeRate)}</Text>
-              </View>
+          <View style={styles.heroStatsRow}>
+            <View style={styles.heroStat}>
+              <Text style={styles.heroStatLabel}>Rentabilidade</Text>
+              <PrivacyAwareText style={[styles.heroStatValue, { color: stats.profit >= 0 ? colors.success : colors.danger }]}>
+                {stats.profit >= 0 ? '+' : ''}{formatCurrency(stats.profit)} ({formatPercent(stats.profitPercent)})
+              </PrivacyAwareText>
+            </View>
+            <View style={styles.heroStat}>
+              <Text style={styles.heroStatLabel}>Investido</Text>
+              <PrivacyAwareText style={styles.heroStatValue}>{formatCurrency(stats.totalInvested)}</PrivacyAwareText>
             </View>
           </View>
+        </LinearGradient>
+
+
+
+        <View style={styles.quickActionsContainer}>
+          <QuickAction icon="💰" label="Novo Ativo" onPress={() => navigation.navigate('AssetManagement', { openModal: true })} />
+          <QuickAction icon="📊" label="Proventos" onPress={() => navigation.navigate('Dividends')} />
+          <QuickAction icon="🌐" label="Mercado" onPress={() => navigation.navigate('Market')} />
+          <QuickAction icon="📝" label="Gestão" onPress={() => navigation.navigate('AssetManagement')} />
         </View>
 
+        {/* SAÚDE DA CARTEIRA */}
+        <View style={styles.healthContainer}>
+          <View style={styles.healthInfo}>
+            <Text style={styles.healthLabel}>Saúde da Carteira</Text>
+            <Text style={styles.healthValue}>
+              {portfolio.length > 8 ? 'Excelente' : portfolio.length > 4 ? 'Boa' : 'Em Construção'}
+            </Text>
+            <View style={styles.healthScoreBar}>
+              <View style={[styles.healthScoreFill, { width: `${Math.min(portfolio.length * 10, 100)}%` }]} />
+            </View>
+          </View>
+          <Ionicons
+            name={portfolio.length > 5 ? "shield-checkmark-outline" : "shield-outline"}
+            size={32}
+            color={portfolio.length > 5 ? colors.success : colors.warning}
+          />
+        </View>
+
+        {/* META FINANCEIRA */}
+        <FinancialGoal current={stats.totalCurrent} target={100000} />
 
         {/* ALOCAÇÃO */}
-        <View style={styles.allocationSection}>
-          <Text style={styles.sectionTitle}>Alocação</Text>
-          <View style={styles.allocationChart}>
-            <View style={styles.allocationBar}>
-              {categoryAllocations.map((category, index) => {
-                const vibrantColors = ['#6366F1', '#8B5CF6', '#EC4899', '#F59E0B', '#10B981', '#06B6D4', '#F97316', '#84CC16'];
-                const color = vibrantColors[index % vibrantColors.length];
-
-                return (
-                  <View
-                    key={category.type}
-                    style={[
-                      styles.allocationBarFill,
-                      { width: `${category.percentage}%`, backgroundColor: color, marginRight: index < categoryAllocations.length - 1 ? 2 : 0 }
-                    ]}
-                  />
-                );
-              })}
-            </View>
-            <ScrollView
-              horizontal
-              showsHorizontalScrollIndicator={false}
-              contentContainerStyle={styles.allocationLegend}
-            >
-              {categoryAllocations.map((category, index) => {
-                const vibrantColors = ['#6366F1', '#8B5CF6', '#EC4899', '#F59E0B', '#10B981', '#06B6D4', '#F97316', '#84CC16'];
-                const color = vibrantColors[index % vibrantColors.length];
-
-                return (
-                  <View key={category.type} style={styles.allocationLegendItem}>
-                    <View style={[styles.allocationDot, { backgroundColor: color }]} />
-                    <Text style={styles.allocationLabel}>{category.label} {formatPercent(category.percentage)}</Text>
-                  </View>
-                );
-              })}
-            </ScrollView>
+        <View style={styles.section}>
+          <Text style={styles.sectionTitle}>Sua Alocação</Text>
+          <View style={styles.allocationBarContainer}>
+            {categoryAllocations.map((cat, index) => (
+              <View
+                key={cat.type}
+                style={{
+                  flex: cat.percentage,
+                  backgroundColor: [colors.primary, colors.secondary, colors.accent, colors.danger][index % 4],
+                  height: 8,
+                  marginRight: 2,
+                  borderRadius: 4
+                }}
+              />
+            ))}
+          </View>
+          <View style={styles.allocationLegend}>
+            {categoryAllocations.map((cat, index) => (
+              <View key={cat.type} style={styles.legendItem}>
+                <View style={[styles.legendDot, { backgroundColor: [colors.primary, colors.secondary, colors.accent, colors.danger][index % 4] }]} />
+                <Text style={styles.legendText}>{cat.label} {formatPercent(cat.percentage)}</Text>
+              </View>
+            ))}
           </View>
         </View>
 
-        {/* SEÇÃO DE MELHORES E PIORES ATIVOS */}
-        <View style={styles.performersSection}>
-          {Object.entries(performersBySegment).map(([segment, data]) => (
-            <View key={segment} style={styles.segmentGroup}>
-              <Text style={styles.segmentTitle}>GERAL</Text>
-
-              {/* Melhores Ativos */}
-              <Text style={styles.performerTitle}>🏆 Melhores do Dia</Text>
-              {data.top.map((asset) => (
-                <TouchableOpacity
-                  key={asset.ticker}
-                  style={styles.assetCard}
-                  onPress={() => navigation.navigate('AssetDetails', { asset })}
-                >
-                  <View style={styles.assetCardLeft}>
-                    <Text style={styles.assetTicker}>{asset.ticker}</Text>
-                    <Text style={styles.assetName} numberOfLines={1}>{asset.name}</Text>
+        {/* DESTAQUES (Alinhar estilo com Mercado) */}
+        <View style={styles.section}>
+          <Text style={styles.sectionTitle}>Destaques do Dia</Text>
+          {Object.values(performersBySegment).some(s => s.top.length > 0) ? (
+            <ScrollView horizontal showsHorizontalScrollIndicator={false} style={{ marginLeft: -20, paddingLeft: 20 }}>
+              {Object.entries(performersBySegment).map(([key, segment]) =>
+                segment.top.map(asset => (
+                  <View key={asset.ticker} style={styles.highlightCard}>
+                    <Text style={styles.highlightTicker}>{asset.ticker}</Text>
+                    <Text style={styles.highlightValue}>{formatCurrency(asset.currentPrice)}</Text>
+                    <Text style={styles.highlightChange}>+{formatPercent(asset.dailyChange)}</Text>
                   </View>
-                  <View style={styles.assetCardRight}>
-                    <Text style={[styles.assetProfitText, { color: colors.success }]}>
-                      +{formatPercent(asset.dailyChange)}
-                    </Text>
-                  </View>
-                </TouchableOpacity>
-              ))}
-
-              {/* Piores Ativos */}
-              {data.worst.length > 0 && (
-                <>
-                  <Text style={[styles.performerTitle, { marginTop: 16 }]}>📉 Piores do Dia</Text>
-                  {data.worst.map((asset) => (
-                    <TouchableOpacity
-                      key={asset.ticker}
-                      style={styles.assetCard}
-                      onPress={() => navigation.navigate('AssetDetails', { asset })}
-                    >
-                      <View style={styles.assetCardLeft}>
-                        <Text style={styles.assetTicker}>{asset.ticker}</Text>
-                        <Text style={styles.assetName} numberOfLines={1}>{asset.name}</Text>
-                      </View>
-                      <View style={styles.assetCardRight}>
-                        <Text style={[styles.assetProfitText, { color: colors.danger }]}>
-                          {formatPercent(asset.dailyChange)}
-                        </Text>
-                      </View>
-                    </TouchableOpacity>
-                  ))}
-                </>
+                ))
               )}
-            </View>
-          ))}
+            </ScrollView>
+          ) : (
+            <Text style={{ color: colors.textSecondary }}>Mercado fechado ou sem dados.</Text>
+          )}
         </View>
 
-
-        {/* AÇÕES RÁPIDAS */}
-        <View style={styles.quickActionsSection}>
-          <Text style={styles.sectionTitle}>Ações Rápidas</Text>
-          <View style={styles.quickActionsGrid}>
-            <TouchableOpacity
-              style={styles.quickActionCard}
-              onPress={handleNewTransaction}
-            >
-              <Text style={styles.quickActionIcon}>📝</Text>
-              <Text style={styles.quickActionText}>Nova Transação</Text>
-            </TouchableOpacity>
-            <TouchableOpacity
-              style={styles.quickActionCard}
-              onPress={() => navigation.navigate('Portfolio')}
-            >
-              <Text style={styles.quickActionIcon}>📊</Text>
-              <Text style={styles.quickActionText}>Gestão de Portfólio</Text>
-            </TouchableOpacity>
-            <TouchableOpacity
-              style={styles.quickActionCard}
-              onPress={handleManualRefresh}
-            >
-              <Text style={styles.quickActionIcon}>🔄</Text>
-              <Text style={styles.quickActionText}>Atualizar</Text>
-            </TouchableOpacity>
-          </View>
-        </View>
-
-            <View style={{ height: 40 }} />
+        <View style={{ height: 100 }} />
       </ScrollView>
 
-          <TransactionModal
-            visible={transactionModalVisible}
-            onClose={handleTransactionAdded}
-            onTransactionAdded={handleTransactionAdded}
-            initialDateInput={transactionDateInput}
-            portfolio={portfolio}
-          />
     </SafeAreaView>
   );
 };
@@ -417,470 +299,302 @@ const DashboardScreen = ({ navigation }) => {
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: '#0F172A',
+    backgroundColor: colors.background,
   },
-  loadingContainer: {
-    flex: 1,
+  center: {
     justifyContent: 'center',
-    alignItems: 'center',
+    alignItems: 'center'
+  },
+  scrollView: {
     padding: 20,
   },
-  loadingCard: {
-    backgroundColor: colors.surface,
-    padding: 40,
-    borderRadius: 20,
-    alignItems: 'center',
-    borderWidth: 1,
-    borderColor: colors.border,
-  },
-  loadingText: {
-    marginTop: 20,
-    fontSize: 18,
-    fontWeight: '700',
-    color: colors.text,
-  },
-  loadingSubtext: {
+  header: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'flex-start',
+    marginBottom: 24,
     marginTop: 8,
-    fontSize: 14,
-    color: colors.textSecondary,
-    textAlign: 'center',
   },
-
-  // HERO SECTION
-  heroSection: {
-    backgroundColor: colors.primary,
-    padding: 24,
-    paddingTop: 16,
-    borderBottomLeftRadius: 30,
-    borderBottomRightRadius: 30,
-    paddingBottom: 32,
-    // Shadow for iOS
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 4 },
-    shadowOpacity: 0.3,
-    shadowRadius: 8,
-    // Shadow for Android
-    elevation: 8,
-  },
-  heroHeader: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    marginBottom: 24,
-  },
-  heroGreeting: {
+  greeting: {
     fontSize: 28,
-    fontWeight: '800',
-    color: '#ffffff',
-  },
-  heroSubtitle: {
-    fontSize: 14,
-    color: '#ffffff',
-    opacity: 0.8,
-    marginTop: 4,
-  },
-  settingsButton: {
-    width: 40,
-    height: 40,
-    borderRadius: 20,
-    backgroundColor: 'rgba(255,255,255,0.2)',
-    justifyContent: 'center',
-    alignItems: 'center',
-  },
-  settingsIcon: {
-    fontSize: 20,
-  },
-  heroValueContainer: {
-    alignItems: 'center',
-    marginBottom: 20,
-  },
-  heroValue: {
-    fontSize: 42,
-    fontWeight: '900',
-    color: '#ffffff',
-    marginBottom: 8,
-  },
-  heroProfitContainer: {
-    flexDirection: 'row',
-    alignItems: 'center',
-  },
-  heroProfitBadge: {
-    paddingHorizontal: 16,
-    paddingVertical: 8,
-    borderRadius: 20,
-  },
-  heroProfitText: {
-    fontSize: 16,
-    fontWeight: '700',
-  },
-  quickStats: {
-    flexDirection: 'row',
-    backgroundColor: 'rgba(255,255,255,0.15)',
-    borderRadius: 16,
-    padding: 16,
-    justifyContent: 'space-around',
-  },
-  quickStatItem: {
-    alignItems: 'center',
-    flex: 1,
-  },
-  quickStatLabel: {
-    fontSize: 12,
-    color: '#ffffff',
-    opacity: 0.8,
-    marginBottom: 4,
-  },
-  quickStatValue: {
-    fontSize: 16,
-    fontWeight: '700',
-    color: '#ffffff',
-  },
-  quickStatDivider: {
-    width: 1,
-    height: '100%',
-    backgroundColor: 'rgba(255,255,255,0.2)',
-  },
-  usdInvestmentSection: {
-    paddingHorizontal: 24,
-    marginBottom: 24,
-  },
-
-  // ALOCAÇÃO
-  allocationSection: {
-    padding: 20,
-    paddingTop: 24,
-  },
-  sectionTitle: {
-    fontSize: 20,
-    fontWeight: '700',
+    fontWeight: 'bold',
     color: colors.text,
-    marginBottom: 16,
   },
-  allocationChart: {
-    backgroundColor: colors.surface,
-    padding: 20,
-    paddingBottom: 24,
-    borderRadius: 16,
-    borderWidth: 1,
-    borderColor: colors.border,
-  },
-  allocationBar: {
-    flexDirection: 'row',
-    height: 12,
-    borderRadius: 6,
-    backgroundColor: colors.border,
-    overflow: 'hidden',
-    marginBottom: 16,
-  },
-  allocationBarFill: {
-    height: '100%',
-  },
-  allocationLegend: {
-    flexDirection: 'row',
-    justifyContent: 'space-around',
-  },
-  allocationLegendItem: {
-    flexDirection: 'row',
-    alignItems: 'center',
-  },
-  allocationDot: {
-    width: 12,
-    height: 12,
-    borderRadius: 6,
-    marginRight: 8,
-  },
-  allocationLabel: {
+  date: {
     fontSize: 14,
     color: colors.textSecondary,
-    fontWeight: '600',
+    textTransform: 'capitalize',
   },
-
-  // FILTROS
-  filterSection: {
-    paddingHorizontal: 20,
-    marginBottom: 16,
-  },
-  filterGrid: {
-    flexDirection: 'row',
-    gap: 12,
-    paddingHorizontal: 20,
-  },
-  filterCard: {
-    width: 80,
-    backgroundColor: colors.surface,
-    padding: 16,
-    borderRadius: 16,
-    alignItems: 'center',
-    borderWidth: 1,
-    borderColor: colors.border,
-  },
-  filterCardActive: {
-    backgroundColor: colors.primary,
-    borderColor: colors.primary,
-  },
-  filterCardIcon: {
-    fontSize: 24,
-    marginBottom: 8,
-  },
-  filterCardText: {
-    fontSize: 12,
-    fontWeight: '600',
-    color: colors.textSecondary,
-  },
-  filterCardTextActive: {
-    color: '#ffffff',
-  },
-
-  // PERFORMERS
-  performersSection: {
-    paddingHorizontal: 20,
-    marginBottom: 24,
-  },
-  topCardsSection: {
-    paddingHorizontal: 20,
-    marginBottom: 24,
-  },
-  segmentGroup: {
-    marginBottom: 20,
-  },
-  segmentTitle: {
-    fontSize: 16,
-    fontWeight: '700',
-    color: colors.text,
-    marginBottom: 12,
-    textTransform: 'uppercase',
-    letterSpacing: 0.5,
-  },
-  topCardsContainer: {
-    flexDirection: 'row',
-    gap: 12,
-  },
-  topCard: {
-    flex: 1,
-    backgroundColor: colors.surface,
-    padding: 16,
-    borderRadius: 12,
-    alignItems: 'center',
-    borderWidth: 1,
-    borderColor: colors.border,
-    // Shadow for iOS
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.1,
-    shadowRadius: 4,
-    // Shadow for Android
-    elevation: 2,
-  },
-  topCardTicker: {
-    fontSize: 14,
-    fontWeight: '700',
-    color: colors.text,
-    marginBottom: 4,
-  },
-  topCardName: {
-    fontSize: 12,
-    color: colors.textSecondary,
-    textAlign: 'center',
-    marginBottom: 8,
-    numberOfLines: 2,
-  },
-  topCardProfit: {
-    fontSize: 14,
-    fontWeight: '600',
-    color: colors.text,
-    marginBottom: 4,
-  },
-  topCardProfitPercent: {
-    fontSize: 12,
-    fontWeight: '600',
-  },
-  performerHeader: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    marginBottom: 16,
-  },
-  performerTitle: {
-    fontSize: 20,
-    fontWeight: '700',
-    color: colors.text,
-  },
-  seeAllButton: {
-    fontSize: 14,
-    color: colors.primary,
-    fontWeight: '600',
-  },
-
-  // ASSET CARD
-  assetCard: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    backgroundColor: colors.surface,
-    padding: 16,
-    borderRadius: 16,
-    marginBottom: 12,
-    borderWidth: 1,
-    borderColor: colors.border,
-  },
-  assetCardLeft: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    flex: 1,
-  },
-  assetRank: {
-    width: 36,
-    height: 36,
-    borderRadius: 18,
-    backgroundColor: colors.primary + '20',
-    justifyContent: 'center',
-    alignItems: 'center',
-    marginRight: 12,
-  },
-  assetRankText: {
-    fontSize: 16,
-    fontWeight: '700',
-    color: colors.primary,
-  },
-  assetInfo: {
-    flex: 1,
-  },
-  assetTitleRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    marginBottom: 4,
-  },
-  assetTicker: {
-    fontSize: 16,
-    fontWeight: '700',
-    color: colors.text,
-    marginRight: 6,
-  },
-  mockBadge: {
-    fontSize: 12,
-  },
-  assetName: {
-    fontSize: 13,
-    color: colors.textSecondary,
-  },
-  assetCardRight: {
-    alignItems: 'flex-end',
-  },
-  assetPrice: {
-    fontSize: 16,
-    fontWeight: '700',
-    color: colors.text,
-    marginBottom: 6,
-  },
-  assetProfitBadge: {
+  usdBadge: {
+    marginTop: 8,
+    backgroundColor: colors.surfaceHighlight,
     paddingHorizontal: 10,
     paddingVertical: 4,
-    borderRadius: 12,
+    borderRadius: 8,
+    alignSelf: 'flex-start',
   },
-  assetProfitText: {
-    fontSize: 13,
+  usdText: {
+    color: colors.textSecondary,
+    fontSize: 12,
+    fontWeight: '600',
+  },
+  btcBadge: {
+    marginTop: 4,
+    backgroundColor: '#F7931A20',
+    paddingHorizontal: 10,
+    paddingVertical: 4,
+    borderRadius: 8,
+    alignSelf: 'flex-start',
+    borderWidth: 1,
+    borderColor: '#F7931A40',
+  },
+  btcText: {
+    color: '#F7931A',
+    fontSize: 12,
     fontWeight: '700',
   },
-  assetWeeklyChange: {
-    fontSize: 12,
+  iconButton: {
+    backgroundColor: colors.surfaceHighlight,
+    padding: 10,
+    borderRadius: 12,
+  },
+
+  // HERO CARD
+  heroCard: {
+    // backgroundColor: colors.surface, // Removido para usar Gradient
+    borderRadius: 24,
+    padding: 24,
+    marginBottom: 24,
+    // borderWidth: 1, // Removido border para gradient mais limpo
+    // borderColor: colors.border,
+    shadowColor: colors.primary,
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.15, // Aumentado ligeiramente
+    shadowRadius: 16,
+    elevation: 8,
+  },
+  heroLabel: {
     color: colors.textSecondary,
-    marginTop: 4,
+    fontSize: 14,
+    marginBottom: 4,
+    fontWeight: '600',
+  },
+  heroValue: {
+    color: colors.text,
+    fontSize: 36,
+    fontWeight: '800',
+    marginBottom: 4,
+    letterSpacing: -1,
+  },
+  heroDailyRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginBottom: 20,
+    backgroundColor: 'rgba(255,255,255,0.05)',
+    paddingHorizontal: 8,
+    paddingVertical: 2,
+    borderRadius: 6,
+    alignSelf: 'flex-start',
+  },
+  heroDailyText: {
+    fontSize: 12,
+    fontWeight: '600',
+    marginLeft: 4,
+  },
+  heroStatsRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    paddingTop: 16,
+    borderTopWidth: 1,
+    borderTopColor: 'rgba(255,255,255,0.1)', // Cor mais suave para overlay no gradient
+  },
+  heroStat: {
+    flex: 1,
+  },
+  heroStatLabel: {
+    color: colors.textSecondary,
+    fontSize: 12,
+    marginBottom: 4,
+  },
+  heroStatValue: {
+    color: colors.text,
+    fontSize: 16,
+    fontWeight: 'bold',
   },
 
   // QUICK ACTIONS
-  quickActionsSection: {
-    paddingHorizontal: 20,
-    marginBottom: 24,
+  quickActionsContainer: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    marginBottom: 32,
   },
-  quickActionsGrid: {
+  quickActionBtn: {
+    alignItems: 'center',
+    width: '22%',
+  },
+  quickActionIconContainer: {
+    width: 56,
+    height: 56,
+    borderRadius: 28,
+    backgroundColor: colors.surface,
+    justifyContent: 'center',
+    alignItems: 'center',
+    marginBottom: 8,
+    borderWidth: 1,
+    borderColor: colors.surfaceHighlight,
+  },
+  quickActionLabel: {
+    color: colors.textSecondary,
+    fontSize: 12,
+    fontWeight: '500',
+  },
+
+  // SECTIONS
+  section: {
+    marginBottom: 32,
+  },
+  sectionTitle: {
+    fontSize: 18,
+    fontWeight: 'bold',
+    color: colors.text,
+    marginBottom: 16,
+  },
+  allocationBarContainer: {
+    flexDirection: 'row',
+    width: '100%',
+    justifyContent: 'flex-start',
+    marginBottom: 16,
+    overflow: 'hidden',
+  },
+  allocationLegend: {
     flexDirection: 'row',
     flexWrap: 'wrap',
     gap: 12,
   },
-  quickActionCard: {
-    width: (width - 56) / 2,
-    backgroundColor: colors.surface,
-    padding: 24,
-    borderRadius: 20,
+  legendItem: {
+    flexDirection: 'row',
     alignItems: 'center',
-    borderWidth: 1,
-    borderColor: colors.border,
-    // Shadow for iOS
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 4 },
-    shadowOpacity: 0.15,
-    shadowRadius: 8,
-    // Shadow for Android
-    elevation: 6,
+    marginRight: 12,
   },
-  quickActionIcon: {
-    fontSize: 32,
+  legendDot: {
+    width: 8,
+    height: 8,
+    borderRadius: 4,
+    marginRight: 6,
+  },
+  legendText: {
+    color: colors.textSecondary,
+    fontSize: 12,
+  },
+
+  // HIGHLIGHTS
+  highlightCard: {
+    backgroundColor: colors.surface,
+    padding: 16,
+    borderRadius: 16,
+    marginRight: 12,
+    minWidth: 120,
+    borderWidth: 1,
+    borderColor: colors.surfaceHighlight,
+  },
+  highlightTicker: {
+    color: colors.text,
+    fontWeight: 'bold',
+    fontSize: 14,
     marginBottom: 8,
   },
-  quickActionText: {
-    fontSize: 14,
-    fontWeight: '600',
-    color: colors.text,
-  },
-
-
-  usdInvestmentCard: {
-    backgroundColor: colors.primary,
-    padding: 20,
-    borderRadius: 16,
-    // Shadow for iOS
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 12 },
-    shadowOpacity: 0.4,
-    shadowRadius: 20,
-    // Shadow for Android
-    elevation: 20,
-  },
-  usdInvestmentTitle: {
-    fontSize: 18,
-    fontWeight: '700',
-    color: '#FFFFFF', // Letra branca para contraste
-    marginBottom: 4,
-  },
-  usdInvestmentSubtitle: {
-    fontSize: 14,
-    color: '#94A3B8', // Tom de cinza claro
-    marginBottom: 16,
-  },
-  usdInvestmentValues: {
-    flexDirection: 'row',
-    justifyContent: 'space-around',
-  },
-  usdInvestmentValue: {
-    alignItems: 'center',
-  },
-  usdInvestmentLabel: {
+  highlightValue: {
+    color: colors.textSecondary,
     fontSize: 12,
-    color: '#94A3B8', // Tom de cinza claro
     marginBottom: 4,
   },
-  usdInvestmentAmount: {
-    fontSize: 18,
-    fontWeight: '700',
-    color: '#FFFFFF', // Letra branca para contraste
-  },
-  usdInvestmentDivider: {
-    width: 1,
-    backgroundColor: '#334155', // Cor do divisor
-  },
-  dailyChangeBadge: {
-    paddingHorizontal: 12,
-    paddingVertical: 6,
-    borderRadius: 12,
-    alignSelf: 'flex-start',
-    marginBottom: 16,
-  },
-  dailyChangeText: {
+  highlightChange: {
+    color: colors.success,
+    fontWeight: 'bold',
     fontSize: 14,
-    fontWeight: '700',
   },
 
-
+  healthContainer: {
+    flexDirection: 'row',
+    backgroundColor: colors.surface,
+    padding: 20,
+    borderRadius: 24,
+    marginBottom: 24,
+    alignItems: 'center',
+    borderWidth: 1,
+    borderColor: colors.surfaceHighlight,
+  },
+  healthInfo: {
+    flex: 1,
+    paddingRight: 16,
+  },
+  healthLabel: {
+    color: colors.textSecondary,
+    fontSize: 12,
+    marginBottom: 4,
+  },
+  healthValue: {
+    color: colors.text,
+    fontSize: 18,
+    fontWeight: 'bold',
+    marginBottom: 8,
+  },
+  healthScoreBar: {
+    height: 6,
+    backgroundColor: 'rgba(255,255,255,0.05)',
+    borderRadius: 3,
+    overflow: 'hidden',
+  },
+  healthScoreFill: {
+    height: '100%',
+    backgroundColor: colors.primary,
+  },
+  goalCard: {
+    backgroundColor: colors.surface,
+    padding: 20,
+    borderRadius: 24,
+    marginBottom: 24,
+    borderWidth: 1,
+    borderColor: colors.surfaceHighlight,
+  },
+  goalHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginBottom: 12,
+  },
+  goalTitle: {
+    color: colors.text,
+    fontSize: 16,
+    fontWeight: 'bold',
+  },
+  goalTarget: {
+    color: colors.textSecondary,
+    fontSize: 12,
+  },
+  goalProgressContainer: {
+    height: 12,
+    backgroundColor: 'rgba(255,255,255,0.05)',
+    borderRadius: 6,
+    overflow: 'hidden',
+    marginBottom: 8,
+  },
+  goalProgressFill: {
+    height: '100%',
+  },
+  goalFooter: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+  },
+  goalPercent: {
+    color: colors.primary,
+    fontSize: 12,
+    fontWeight: 'bold',
+  },
+  goalRemaining: {
+    color: colors.textMuted,
+    fontSize: 12,
+  },
 });
 
 export default DashboardScreen;

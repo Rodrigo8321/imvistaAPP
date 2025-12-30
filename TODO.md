@@ -1,38 +1,33 @@
-# Correções para erro "TypeError: Cannot read property 'toFixed' of undefined"
+# Unificação de Navegação para AssetDetailsScreen
 
-## Problema
+## ✅ Concluído
 
-O erro ocorre quando componentes tentam chamar `.toFixed()` em valores `undefined` ou `NaN` dos dados do portfólio.
+- [x] Atualizar MarketScreen para usar formato unificado de parâmetros
+- [x] Atualizar AssetDetailsScreen para lidar consistentemente com parâmetros unificados
+- [x] Padronizar formato: `symbol` (ticker principal) e `asset` (objeto opcional)
 
-## Correções Necessárias
+## 📋 Resumo das Mudanças
 
-### ✅ 1. PortfolioSummary.js
+- **MarketScreen**: Removido `ticker` duplicado, simplificado para `{ symbol: cleanSymbol, asset: { ticker: cleanSymbol } }`
+- **AssetDetailsScreen**: Unificado extração de parâmetros, sempre priorizando `symbol` como ticker principal
+- **Logs**: Adicionados logs unificados `[UNIFIED NAV]` para rastrear navegação
 
-- [x] Corrigir `Math.abs(stats.profitPercent).toFixed(2)` para lidar com valores undefined/NaN
+## 🧪 Testes Necessários
 
-### ✅ 2. PerformanceComparison.js
+- [ ] Testar navegação do PortfolioScreen (já usa formato correto)
+- [ ] Testar navegação do MarketScreen (formato atualizado)
+- [ ] Verificar se dados de análise são inseridos corretamente em ambos os casos
+- [ ] Testar com diferentes tipos de ativos (Ações, Cripto, etc.)
 
-- [x] Corrigir `Math.abs(asset.performance || 0).toFixed(2)` para validação mais robusta
+## 🔍 Validação
 
-### ✅ 3. RecommendationsCard.js
+- [ ] Verificar logs `[UNIFIED NAV]` no console
+- [ ] Confirmar que `symbol` é sempre o ticker correto
+- [ ] Verificar que `asset` contém dados adicionais quando disponível
+- [ ] Testar funcionalidade completa da tela de detalhes
 
-- [ ] Corrigir `(avgPerformance || 0).toFixed(2)` para validação mais robusta
+## 📝 Notas Técnicas
 
-### ✅ 4. DiversificationChart.js
-
-- [ ] Corrigir `((item.value / total) * 100).toFixed(1)` para validar item.value e total
-
-### ✅ 5. SectorDistribution.js
-
-- [ ] Corrigir `((item.value / total) * 100).toFixed(1)` para validar item.value e total
-
-## Estratégia de Correção
-
-- Usar função helper `safeToFixed(value, decimals = 2)` que verifica se o valor é um número válido
-- Retornar '0.00' ou valor padrão apropriado para casos inválidos
-- Garantir que cálculos de percentual sejam seguros
-
-## Testes
-
-- [ ] Executar testes para verificar que o erro foi corrigido
-- [ ] Verificar que a aplicação funciona corretamente com dados do portfólio
+- Formato unificado evita conflitos entre `symbol`/`ticker`/`asset.ticker`
+- AssetDetailsScreen agora cria objeto `holding` mínimo se `asset` não tiver `ticker`
+- Compatibilidade mantida com navegações existentes

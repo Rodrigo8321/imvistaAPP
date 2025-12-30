@@ -3,7 +3,7 @@ import { ActivityIndicator, View, StyleSheet } from 'react-native';
 import { useAuth } from '../contexts/AuthContext';
 import { AuthNavigator } from './AuthNavigator';
 import { AppNavigator } from './AppNavigator';
-import { colors } from '@/styles';
+import colors from '../styles/colors';
 
 const RootNavigator = () => {
   const { user, isLoading } = useAuth();

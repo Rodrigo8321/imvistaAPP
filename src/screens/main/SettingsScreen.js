@@ -9,11 +9,35 @@ import {
   testExchangeRateApi,
 } from '../../services/marketService';
 import { transactionService } from '../../services/transactionService';
+import storageService from '../../services/storageService';
 
-const SettingsScreen = () => {
+const SettingsScreen = ({ navigation }) => {
   const { logout, user } = useAuth();
   const [apiStatus, setApiStatus] = useState(null);
   const [isTesting, setIsTesting] = useState(false);
+
+  const handleResetAll = () => {
+    Alert.alert(
+      '🚨 Redefinição Total',
+      'Isso apagará ABSOLUTAMENTE TUDO: seu portfólio, histórico de transações e preferências. O app voltará ao estado original. Deseja continuar?',
+      [
+        { text: 'Cancelar', style: 'cancel' },
+        {
+          text: 'APAGAR TUDO',
+          style: 'destructive',
+          onPress: async () => {
+            try {
+              await storageService.clearAllData();
+              await transactionService.clearTransactions();
+              Alert.alert('Sucesso', 'Todos os dados foram removidos. Por favor, reinicie o aplicativo para aplicar as mudanças.');
+            } catch (error) {
+              Alert.alert('Erro', 'Ocorreu um erro ao tentar limpar os dados.');
+            }
+          }
+        }
+      ]
+    );
+  };
 
   const handleLogout = () => {
     Alert.alert(
@@ -134,6 +158,12 @@ const SettingsScreen = () => {
             <Text style={styles.optionArrow}>→</Text>
           </TouchableOpacity>
 
+          <TouchableOpacity style={styles.optionButton} onPress={() => navigation.navigate('Goals')}>
+            <Text style={styles.optionIcon}>🎯</Text>
+            <Text style={styles.optionText}>Minhas Metas</Text>
+            <Text style={styles.optionArrow}>→</Text>
+          </TouchableOpacity>
+
           <TouchableOpacity style={styles.optionButton}>
             <Text style={styles.optionIcon}>🔒</Text>
             <Text style={styles.optionText}>Privacidade</Text>
@@ -153,6 +183,12 @@ const SettingsScreen = () => {
           <TouchableOpacity style={[styles.optionButton, { borderColor: colors.danger }]} onPress={handleClearTransactions}>
             <Text style={styles.optionIcon}>🔥</Text>
             <Text style={[styles.optionText, { color: colors.danger }]}>Limpar Todas as Transações</Text>
+            <Text style={styles.optionArrow}>→</Text>
+          </TouchableOpacity>
+
+          <TouchableOpacity style={[styles.optionButton, { borderColor: colors.danger, backgroundColor: colors.danger + '10' }]} onPress={handleResetAll}>
+            <Text style={styles.optionIcon}>🚨</Text>
+            <Text style={[styles.optionText, { color: colors.danger, fontWeight: 'bold' }]}>Redefinir Aplicativo (Instalação Limpa)</Text>
             <Text style={styles.optionArrow}>→</Text>
           </TouchableOpacity>
         </View>

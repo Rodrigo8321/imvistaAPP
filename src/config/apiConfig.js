@@ -3,6 +3,7 @@ import {
   ALPHA_VANTAGE_API_KEY,
   COINGECKO_API_KEY,
   FMP_API_KEY,
+  GEMINI_API_KEY,
 } from '@env';
 
 /**
@@ -14,7 +15,7 @@ export const API_CONFIG = {
   // ========== ALPHA VANTAGE (Stocks US) ==========
   alphaVantage: {
     // Ex: ALPHA_VANTAGE_API_KEY=JJ8R7MU3IJIGPLOY
-    apiKey: ALPHA_VANTAGE_API_KEY,
+    apiKey: '9LI8JSRN6TW81UBJ', // Chave configurada para uso
     baseUrl: 'https://www.alphavantage.co/query',
     timeout: 10000, // 10 segundos
     rateLimit: {
@@ -68,9 +69,16 @@ export const API_CONFIG = {
     // API pública, sem chave necessária
   },
 
+  // ========== GOOGLE GEMINI (AI Analysis) ==========
+  gemini: {
+    apiKey: GEMINI_API_KEY,
+    model: 'gemini-1.5-flash',
+    timeout: 30000, // 30 segundos para análise complexa
+  },
+
   // ========== CONFIGURAÇÕES GLOBAIS ==========
   cache: {
-    ttl: 60 * 60 * 1000, // 1 hora
+    ttl: 4 * 60 * 60 * 1000, // 4 horas
     enabled: true,
   },
 
@@ -99,6 +107,15 @@ export const isCoinGeckoConfigured = () => !!API_CONFIG.coinGecko.apiKey;
  * Útil para um check geral na inicialização do app.
  */
 export const areAllAPIsConfigured = () => {
+  const status = {
+    brapi: !!API_CONFIG.brapi.apiKey,
+    gemini: !!API_CONFIG.gemini.apiKey,
+    alpha: !!API_CONFIG.alphaVantage.apiKey,
+  };
+  console.log('[API Config] Chaves carregadas:', status);
+  if (!status.gemini) {
+    console.warn('[API Config] AVISO: GEMINI_API_KEY não foi detectada!');
+  }
   return isBrapiConfigured() && isAlphaVantageConfigured() && isCoinGeckoConfigured();
 };
 
